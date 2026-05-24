@@ -1,0 +1,30 @@
+[package]
+name = "metalcraft-flows"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Specification and reference types for Flows — a serializable DAG format for AI agent workflows"
+license = "MIT"
+repository = "https://github.com/rust4ai/metalcraft-flows"
+homepage = "https://github.com/rust4ai/metalcraft-flows"
+documentation = "https://docs.rs/metalcraft-flows"
+readme = "README.md"
+keywords = ["ai", "agents", "graph", "flow", "workflow"]
+categories = ["data-structures", "config"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+serde_json = "1"
+tempfile = "3"
+
+[features]
+default = ["fs"]
+fs = []
+log = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

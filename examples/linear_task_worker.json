@@ -1,0 +1,36 @@
+{
+  "spec_version": "1",
+  "id": "template-linear-task-worker",
+  "name": "Linear Task Worker",
+  "created_at": "2026-05-19T00:00:00Z",
+  "updated_at": "2026-05-19T00:00:00Z",
+  "enabled": false,
+  "flow": {
+    "nodes": [
+      {
+        "id": "entry",
+        "node_type": "entry",
+        "data": {
+          "schedule_type": "minutes",
+          "interval": 30
+        },
+        "position": [0.0, 0.0]
+      },
+      {
+        "id": "task-worker",
+        "node_type": "prompt",
+        "data": {
+          "prompt": "Pick up the next unstarted Linear issue and attempt to complete it."
+        },
+        "position": [250.0, 0.0]
+      }
+    ],
+    "edges": [
+      {
+        "id": "edge-entry-to-worker",
+        "source": "entry",
+        "target": "task-worker"
+      }
+    ]
+  }
+}
