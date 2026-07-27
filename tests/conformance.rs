@@ -92,3 +92,75 @@ fn vendor_node_type_preserved_through_round_trip() {
     assert!(reserialized.contains("slack:send_message"));
     assert!(reserialized.contains("\"channel\":\"#ops\""));
 }
+
+// --- v2: the Madrid weather user story (deterministic routing) ---------------
+
+use metalcraft_flows::{evaluate, next_by_handle, nodes::ConditionalData, Operator, Variables};
+
+/// Given the `conditional` node's data and a `_last` value, reproduce the
+/// runtime's routing decision using only the crate's public helpers, and return
+/// the id of the node it would advance to.
+fn route_conditional(flow: &SavedFlow, node_id: &str, last: serde_json::Value) -> String {
+    let node = flow.flow.nodes.iter().find(|n| n.id == node_id).unwrap();
+    let data: ConditionalData = serde_json::from_value(node.data.clone()).unwrap();
+
+    let mut vars = Variables::new();
+    vars.set_last(last);
+
+    let handle = data
+        .conditions
+        .iter()
+        .find(|c| {
+            let op = Operator::from_wire(&c.operator).expect("known operator");
+            evaluate(op, vars.get(&c.variable), c.value.as_ref())
+        })
+        .map(|c| c.handle.clone())
+        .or(data.default_handle.clone());
+
+    next_by_handle(&flow.flow, node_id, handle.as_deref())
+        .unwrap_or_else(|| panic!("no route for handle {handle:?}"))
+}
+
+#[test]
+fn madrid_weather_parses_and_validates_as_v2() {
+    let raw = read_example("madrid_weather.json");
+    let flow: SavedFlow = serde_json::from_str(&raw).expect("should parse");
+    assert_eq!(flow.spec_version, "2");
+
+    let errs = validate(&flow);
+    assert!(errs.is_empty(), "expected no validation errors, got: {errs:?}");
+
+    // The classifier node is a Core::Branch with two typed outputs.
+    let get_temp = flow.flow.nodes.iter().find(|n| n.id == "get_temp").unwrap();
+    assert_eq!(get_temp.node_type, FlowNodeType::Core(CoreNodeType::Branch));
+
+    // Round-trips losslessly.
+    let again: SavedFlow =
+        serde_json::from_str(&serde_json::to_string(&flow).unwrap()).unwrap();
+    assert_eq!(flow, again);
+}
+
+#[test]
+fn madrid_weather_routes_by_branch_and_conditional() {
+    let raw = read_example("madrid_weather.json");
+    let flow: SavedFlow = serde_json::from_str(&raw).expect("parse");
+
+    // 1. The branch's typed handles route to the right successors.
+    assert_eq!(
+        next_by_handle(&flow.flow, "get_temp", Some("report_temp")).as_deref(),
+        Some("check_hot")
+    );
+    assert_eq!(
+        next_by_handle(&flow.flow, "get_temp", Some("error")).as_deref(),
+        Some("handle_err")
+    );
+
+    // 2. The conditional compares the incoming i64 payload NUMERICALLY.
+    //    A cold day (18°F) must NOT satisfy `_last > 50`.
+    assert_eq!(route_conditional(&flow, "check_hot", serde_json::json!(18)), "say_cold");
+    //    A warm day (75°F) must satisfy it.
+    assert_eq!(route_conditional(&flow, "check_hot", serde_json::json!(75)), "say_hot");
+    //    Regression guard against the vix lexicographic bug: as strings,
+    //    "18" > "50" would be true and wrongly route to say_hot.
+    assert_eq!(route_conditional(&flow, "check_hot", serde_json::json!("18")), "say_cold");
+}

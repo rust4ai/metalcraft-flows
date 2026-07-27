@@ -8,7 +8,14 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 /// The current spec version this crate emits.
 ///
 /// Documents without a `spec_version` field are parsed as version `"1"`.
-pub const SPEC_VERSION: &str = "1";
+/// New v2 node types (`conditional`, `branch` classifier, effectors, pause
+/// nodes) require `spec_version = "2"`; see [`SUPPORTED_SPEC_VERSIONS`].
+pub const SPEC_VERSION: &str = "2";
+
+/// Spec versions this crate can parse and validate. v2 is a superset of v1, so
+/// both are accepted; documents declaring any other version are rejected by
+/// [`crate::validate()`].
+pub const SUPPORTED_SPEC_VERSIONS: &[&str] = &["1", "2"];
 
 /// A single vertex in a [`FlowDefinition`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -42,15 +49,46 @@ pub enum FlowNodeType {
 /// The closed set of core node types defined by the spec.
 ///
 /// See [`SPEC.md` §5.1](https://github.com/rust4ai/metalcraft-flows/blob/main/SPEC.md).
+///
+/// Variants marked *(v2)* require `spec_version = "2"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CoreNodeType {
     /// Marks the flow's start. At most one per [`FlowDefinition`].
     Entry,
-    /// A natural-language instruction to be passed to an LLM agent.
+    /// A natural-language instruction run by an LLM agent.
     Prompt,
-    /// Splits flow execution based on a condition.
+    /// *(v2)* Deterministic routing: evaluate structured predicates against flow
+    /// state and follow the first matching handle. (In v1 the deterministic node
+    /// was `branch`; in v2 it is renamed to `conditional` and `branch` is
+    /// reassigned to the LLM classifier below.)
+    Conditional,
+    /// LLM classifier: the model picks exactly one typed output handle and fills
+    /// its arguments, which become that edge's payload.
+    ///
+    /// In v1 this wire name meant an opaque, non-executable condition stub; in v2
+    /// it is the classifier. The two `data` shapes are disjoint, so validation
+    /// distinguishes them by `spec_version`.
     Branch,
-    /// Branches based on the outcome of a tool call.
+    /// *(v2)* Assign a value into flow state (literal, template, or a path into
+    /// the incoming edge payload).
+    SetVariable,
+    /// *(v2)* Call a single registered tool directly (no agent loop).
+    Tool,
+    /// *(v2)* Make a direct HTTP request.
+    Http,
+    /// *(v2)* Delegate a subtask to a scoped sub-agent.
+    SubAgent,
+    /// *(v2)* Pause for human input (human-in-the-loop) and resume on a decision.
+    Approval,
+    /// *(v2)* Pause for a durable delay and resume when it elapses.
+    Wait,
+    /// *(v2)* Fan out over a list, running a sub-body per item.
+    Foreach,
+    /// *(v2)* Explicit terminal node; may publish flow outputs.
+    End,
+    /// **Deprecated (v1).** Branch on the outcome of a tool call. Retained so v1
+    /// documents round-trip; superseded by [`CoreNodeType::Conditional`] +
+    /// [`CoreNodeType::Branch`].
     BranchTool,
 }
 
@@ -60,7 +98,16 @@ impl CoreNodeType {
         match self {
             CoreNodeType::Entry => "entry",
             CoreNodeType::Prompt => "prompt",
+            CoreNodeType::Conditional => "conditional",
             CoreNodeType::Branch => "branch",
+            CoreNodeType::SetVariable => "set_variable",
+            CoreNodeType::Tool => "tool",
+            CoreNodeType::Http => "http",
+            CoreNodeType::SubAgent => "sub_agent",
+            CoreNodeType::Approval => "approval",
+            CoreNodeType::Wait => "wait",
+            CoreNodeType::Foreach => "foreach",
+            CoreNodeType::End => "end",
             CoreNodeType::BranchTool => "branch_tool",
         }
     }
@@ -70,10 +117,30 @@ impl CoreNodeType {
         match s {
             "entry" => Some(CoreNodeType::Entry),
             "prompt" => Some(CoreNodeType::Prompt),
+            "conditional" => Some(CoreNodeType::Conditional),
             "branch" => Some(CoreNodeType::Branch),
+            "set_variable" => Some(CoreNodeType::SetVariable),
+            "tool" => Some(CoreNodeType::Tool),
+            "http" => Some(CoreNodeType::Http),
+            "sub_agent" => Some(CoreNodeType::SubAgent),
+            "approval" => Some(CoreNodeType::Approval),
+            "wait" => Some(CoreNodeType::Wait),
+            "foreach" => Some(CoreNodeType::Foreach),
+            "end" => Some(CoreNodeType::End),
             "branch_tool" => Some(CoreNodeType::BranchTool),
             _ => None,
         }
+    }
+
+    /// Whether this node type was introduced in spec v2 (and therefore requires
+    /// `spec_version = "2"`).
+    pub fn is_v2(self) -> bool {
+        !matches!(
+            self,
+            CoreNodeType::Entry
+                | CoreNodeType::Prompt
+                | CoreNodeType::BranchTool
+        )
     }
 }
 
@@ -152,8 +219,16 @@ pub struct SavedFlow {
     pub flow: FlowDefinition,
 }
 
+/// The version assumed for a document that omits `spec_version`.
+///
+/// Per SPEC §6 a missing field means version `"1"` — this is a back-compat rule
+/// and is intentionally distinct from [`SPEC_VERSION`] (the version this crate
+/// *emits*). Using v2 node types therefore requires setting `spec_version` to
+/// `"2"` explicitly.
+pub const DEFAULT_SPEC_VERSION: &str = "1";
+
 fn default_spec_version() -> String {
-    SPEC_VERSION.to_string()
+    DEFAULT_SPEC_VERSION.to_string()
 }
 
 /// Lightweight metadata describing a saved flow, without the graph payload.

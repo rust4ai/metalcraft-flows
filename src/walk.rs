@@ -3,6 +3,32 @@
 use crate::model::{CoreNodeType, FlowDefinition, FlowNode, FlowNodeType};
 use std::collections::{HashMap, HashSet, VecDeque};
 
+/// Resolve the next node id to visit from `source`, following an optional named
+/// output `handle`.
+///
+/// Routing rules (a handle-aware step, unlike [`walk_bfs`]):
+///
+/// 1. If `handle` is `Some`, prefer the edge whose `source_handle` equals it.
+/// 2. Otherwise (or if no handle matched), fall back to an outgoing edge with no
+///    `source_handle` (the default/unlabeled edge).
+///
+/// Returns the target node id, or `None` if no edge applies. Runtimes use this to
+/// route `conditional` / `branch` / `ok`/`error` outcomes.
+pub fn next_by_handle(def: &FlowDefinition, source: &str, handle: Option<&str>) -> Option<String> {
+    if let Some(h) = handle
+        && let Some(edge) = def
+            .edges
+            .iter()
+            .find(|e| e.source == source && e.source_handle.as_deref() == Some(h))
+    {
+        return Some(edge.target.clone());
+    }
+    def.edges
+        .iter()
+        .find(|e| e.source == source && e.source_handle.is_none())
+        .map(|e| e.target.clone())
+}
+
 /// Walk a flow graph in breadth-first order starting from its `entry` node,
 /// invoking `visit` once for each reachable node.
 ///
@@ -78,6 +104,47 @@ mod tests {
             source_handle: None,
             target_handle: None,
         }
+    }
+    fn eh(id: &str, src: &str, tgt: &str, handle: &str) -> FlowEdge {
+        FlowEdge {
+            id: id.into(),
+            source: src.into(),
+            target: tgt.into(),
+            source_handle: Some(handle.into()),
+            target_handle: None,
+        }
+    }
+
+    #[test]
+    fn next_by_handle_prefers_matching_handle() {
+        let def = FlowDefinition {
+            nodes: vec![],
+            edges: vec![eh("1", "c", "hot_node", "hot"), eh("2", "c", "cold_node", "cold")],
+        };
+        assert_eq!(next_by_handle(&def, "c", Some("hot")).as_deref(), Some("hot_node"));
+        assert_eq!(next_by_handle(&def, "c", Some("cold")).as_deref(), Some("cold_node"));
+    }
+
+    #[test]
+    fn next_by_handle_falls_back_to_unlabeled() {
+        let def = FlowDefinition {
+            nodes: vec![],
+            edges: vec![e("1", "a", "b")],
+        };
+        // No handle, or a handle with no matching edge → the unlabeled edge.
+        assert_eq!(next_by_handle(&def, "a", None).as_deref(), Some("b"));
+        assert_eq!(next_by_handle(&def, "a", Some("missing")).as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn next_by_handle_none_when_no_edge() {
+        let def = FlowDefinition {
+            nodes: vec![],
+            edges: vec![eh("1", "c", "x", "only")],
+        };
+        // A handle miss with no unlabeled fallback → None.
+        assert_eq!(next_by_handle(&def, "c", Some("other")), None);
+        assert_eq!(next_by_handle(&def, "nope", None), None);
     }
 
     #[test]

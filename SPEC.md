@@ -1,8 +1,8 @@
 # Flow Specification
 
-**Version:** 1
+**Version:** 2 (supersets v1)
 **Status:** Draft
-**Date:** 2026-05-24
+**Date:** 2026-07-27
 
 A **Flow** is a serializable, human-authored directed graph that describes an
 agent workflow. Flows are designed to be:
@@ -136,12 +136,23 @@ validation error.
 The spec defines these as a closed set; reference implementations MUST
 understand them.
 
+Types marked **(v2)** require `spec_version = "2"` (see §6).
+
 | `node_type`    | `data` schema                                                                                                                                          | Purpose                                                                  |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------ |
-| `entry`        | `{ "schedule_type": "manual" \| "minutes" \| "hours" \| "cron", "interval"?: number, "cron"?: string }`                                                | Marks the flow's start. At most one per `FlowDefinition` (see §5.3).     |
-| `prompt`       | `{ "prompt": string }`                                                                                                                                 | A natural-language instruction to be passed to an LLM agent.             |
-| `branch`       | `{ "condition": string }`                                                                                                                              | Splits flow execution. Edges should use `source_handle` of `"true"` / `"false"` (or other named outputs). |
-| `branch_tool`  | `{ "tool_name": string, "branches": { [tool_outcome: string]: string } }`                                                                              | Branches based on the outcome of a tool call.                            |
+| `entry`        | `{ "schedule_type": "manual"\|"minutes"\|"hours"\|"cron", "interval"?: number, "cron"?: string, "inputs"?: { [name]: InputSpec } }`                    | Marks the flow's start. At most one per `FlowDefinition` (see §5.3). **(v2)** `inputs` declares typed invocation parameters that seed flow state. |
+| `prompt`       | `{ "prompt": string, "persona"?: string, "model"?: string, "output_var"?: string, "output_schema"?: object }`                                          | A natural-language instruction run by an LLM agent. **(v2)** may store its answer and emit `ok`/`error` handles. |
+| `conditional`  | **(v2)** `{ "conditions": [{ "handle": string, "variable": string, "operator": Operator, "value"?: any }], "default_handle"?: string }`                | Deterministic routing: first matching predicate's handle wins (§5.5).    |
+| `branch`       | **(v2)** `{ "query": string, "outputs": [{ "handle": string, "description"?: string, "schema"?: object, "var"?: string }], "persona"?: string, "default_handle"?: string, "timeout"?: number }` | LLM classifier: the model picks exactly one typed output handle and fills its args, which become that edge's payload (§5.4). |
+| `set_variable` | **(v2)** `{ "variable": string, "value"?: any, "from"?: string }`                                                                                      | Assign into flow state (literal/template `value`, or dotted `from` path into `_last`). |
+| `tool`         | **(v2)** `{ "tool_name": string, "args"?: object, "output_var"?: string }`                                                                             | Call one registered tool directly (no agent loop). Emits `ok`/`error`.   |
+| `http`         | **(v2)** `{ "method": string, "url": string, "headers"?: object, "body"?: any, "output_var"?: string }`                                                | Direct HTTP request. Emits `ok`/`error`.                                 |
+| `sub_agent`    | **(v2)** `{ "task": string, "persona"?: string, "tool_set"?: string, "pack"?: string, "output_var"?: string }`                                         | Delegate a subtask to a scoped sub-agent.                               |
+| `approval`     | **(v2)** `{ "message": string, "choices"?: [string], "timeout"?: number }`                                                                             | Pause for human input; resume on a decision handle.                     |
+| `wait`         | **(v2)** `{ "duration"?: string, "until"?: string }`                                                                                                   | Pause for a durable delay; resume via `after`.                          |
+| `foreach`      | **(v2)** `{ "list": string, "item_var": string, "mode": "sequential"\|"concurrent", "body_entry": string }`                                            | Fan out over a list into a sub-body.                                     |
+| `end`          | **(v2)** `{ "status"?: string, "outputs"?: object }`                                                                                                   | Explicit terminal; may publish flow outputs.                            |
+| `branch_tool`  | **Deprecated (v1).** `{ "tool_name": string, "branches": { [tool_outcome: string]: string } }`                                                         | Superseded by `conditional` + `branch`; retained for round-trip.        |
 
 ### 5.2 Custom (vendor) node types
 
@@ -164,8 +175,14 @@ Rules:
 - Reference runtimes MAY refuse to execute unknown custom node types but
   MUST NOT corrupt or drop them when round-tripping the JSON.
 
-The bare names `entry`, `prompt`, `branch`, `branch_tool` are reserved for
-core types and MUST NOT be redefined by vendors.
+The bare core-type names (`entry`, `prompt`, `conditional`, `branch`,
+`set_variable`, `tool`, `http`, `sub_agent`, `approval`, `wait`, `foreach`,
+`end`, `branch_tool`) are reserved and MUST NOT be redefined by vendors.
+
+> **Wire-name note (v1 → v2).** In v1, `branch` named an opaque
+> `{ "condition": string }` stub. In v2, `branch` is **reassigned** to the LLM
+> classifier and the deterministic node is the new `conditional`. The two `data`
+> shapes are disjoint; parsers distinguish them by `spec_version`.
 
 ### 5.3 Entry node rules
 
@@ -174,20 +191,47 @@ core types and MUST NOT be redefined by vendors.
   cannot be executed.
 - Flows with two or more `entry` nodes are a validation error.
 
+### 5.4 State and typed edge payloads (v2)
+
+A run carries a single JSON **state** object (`variables`). It is runtime state —
+**not** part of a `SavedFlow` — but the wire format references it:
+
+- `entry.data.inputs` declares typed parameters seeded into state at run start.
+- Reserved keys: `_last` (the payload of the edge just traversed into the current
+  node — its typed input), `_inputs` (immutable copy of seeded inputs), `_run`
+  (reserved metadata).
+- String fields (`prompt`, `tool.args`, `http.url`/`body`, `set_variable.value`,
+  `approval.message`, …) support `{{path}}` interpolation against `variables`.
+
+**Output handles may be typed.** When a node's chosen handle carries a payload,
+that payload becomes the traversed edge's value and is delivered to the target
+node as `_last`. For a `branch`, each `outputs[]` entry is a tool definition: the
+model selects exactly one handle and fills its `schema`-typed arguments, which
+become the payload. `prompt`/`tool`/`http` emit `ok` (result) / `error` handles.
+
+### 5.5 Conditional operators (v2)
+
+`conditional.conditions[].operator` is one of: `equals`, `not_equals`,
+`contains`, `starts_with`, `ends_with`, `gt`, `lt`, `exists`, `truthy`,
+`matches` (regex). `gt`/`lt` compare **numerically** when both operands parse as
+numbers. The first matching condition's `handle` is taken; otherwise
+`default_handle`; otherwise the node's unlabeled outgoing edge.
+
 ---
 
 ## 6. Versioning
 
 The spec is versioned via the optional top-level `spec_version` field.
 
-- The current version is `"1"`.
-- When the field is absent, parsers MUST treat the document as `"1"`.
-- Future breaking changes will increment to `"2"` and parsers will be
-  expected to read both, or to refuse documents with newer `spec_version`
-  values they don't understand.
+- The current version is `"2"`; parsers in this crate accept `"1"` and `"2"`.
+- When the field is absent, parsers MUST treat the document as `"1"` (this is a
+  back-compat rule, distinct from the version the crate *emits*).
+- Any v2-only core node type in a document declaring `"1"` is a validation error:
+  using v2 features requires setting `spec_version` to `"2"` explicitly.
+- Parsers MUST refuse documents with a `spec_version` they don't understand.
 
-Additive, non-breaking changes (new optional fields, new core node types)
-will be introduced without a version bump and announced in the changelog.
+Additive, non-breaking changes (new optional fields) may be introduced without a
+version bump and announced in the changelog.
 
 ---
 

@@ -1,0 +1,48 @@
+{
+  "spec_version": "2",
+  "id": "madrid-weather",
+  "name": "Madrid weather check",
+  "created_at": "2026-07-27T00:00:00Z",
+  "updated_at": "2026-07-27T00:00:00Z",
+  "enabled": false,
+  "flow": {
+    "nodes": [
+      { "id": "entry", "node_type": "entry", "data": { "schedule_type": "manual" }, "position": [0, 0] },
+      {
+        "id": "get_temp",
+        "node_type": "branch",
+        "data": {
+          "query": "What is the temperature in Madrid right now, in °F?",
+          "persona": "weather-agent",
+          "outputs": [
+            { "handle": "report_temp", "description": "Temperature was determined successfully", "schema": { "type": "integer", "description": "temperature in °F" } },
+            { "handle": "error", "description": "Could not determine the temperature", "schema": { "type": "string", "description": "what went wrong" } }
+          ],
+          "default_handle": "error"
+        },
+        "position": [250, 0]
+      },
+      {
+        "id": "check_hot",
+        "node_type": "conditional",
+        "data": {
+          "conditions": [
+            { "handle": "hot", "variable": "_last", "operator": "gt", "value": 50 }
+          ],
+          "default_handle": "cold"
+        },
+        "position": [500, 0]
+      },
+      { "id": "say_hot", "node_type": "prompt", "data": { "prompt": "Tell the user it's warm in Madrid: {{_last}}°F." }, "position": [750, -80] },
+      { "id": "say_cold", "node_type": "prompt", "data": { "prompt": "Tell the user it's chilly in Madrid." }, "position": [750, 80] },
+      { "id": "handle_err", "node_type": "prompt", "data": { "prompt": "Report that the weather lookup failed: {{_last}}" }, "position": [500, 160] }
+    ],
+    "edges": [
+      { "id": "e0", "source": "entry", "target": "get_temp" },
+      { "id": "e1", "source": "get_temp", "target": "check_hot", "source_handle": "report_temp" },
+      { "id": "e2", "source": "get_temp", "target": "handle_err", "source_handle": "error" },
+      { "id": "e3", "source": "check_hot", "target": "say_hot", "source_handle": "hot" },
+      { "id": "e4", "source": "check_hot", "target": "say_cold", "source_handle": "cold" }
+    ]
+  }
+}

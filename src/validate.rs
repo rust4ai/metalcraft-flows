@@ -1,9 +1,11 @@
 //! Spec-conformance validation for a [`SavedFlow`] or [`FlowDefinition`].
 
+use crate::eval::Operator;
 use crate::model::{
-    is_safe_id, is_valid_vendor, CoreNodeType, FlowDefinition, FlowNodeType, SavedFlow,
-    SPEC_VERSION,
+    is_safe_id, is_valid_vendor, CoreNodeType, FlowDefinition, FlowNode, FlowNodeType, SavedFlow,
+    SUPPORTED_SPEC_VERSIONS,
 };
+use crate::nodes::{BranchData, ConditionalData};
 use std::collections::HashSet;
 use std::fmt;
 
@@ -41,6 +43,34 @@ pub enum ValidationError {
         /// The raw `node_type` string that failed the vendor-namespace check.
         node_type: String,
     },
+    /// A v2-only core node type is used in a document declaring `spec_version = "1"`.
+    V2NodeInV1Document {
+        /// Id of the offending node.
+        node: String,
+        /// The node's wire-format type string.
+        node_type: String,
+    },
+    /// A node's `data` payload does not match the schema for its `node_type`.
+    InvalidNodeData {
+        /// Id of the offending node.
+        node: String,
+        /// What was wrong.
+        message: String,
+    },
+    /// A `conditional` condition names an operator the runtime doesn't know.
+    UnknownOperator {
+        /// Id of the offending node.
+        node: String,
+        /// The unrecognized operator string.
+        operator: String,
+    },
+    /// A node declares an output `handle` that has no matching outgoing edge.
+    MissingHandleEdge {
+        /// Id of the offending node.
+        node: String,
+        /// The handle that has no `source_handle` edge leaving the node.
+        handle: String,
+    },
 }
 
 impl fmt::Display for ValidationError {
@@ -50,7 +80,7 @@ impl fmt::Display for ValidationError {
                 write!(f, "invalid flow id {id:?}: must match [A-Za-z0-9-]{{1,64}}")
             }
             ValidationError::UnsupportedSpecVersion(v) => {
-                write!(f, "unsupported spec_version {v:?}; this parser supports {SPEC_VERSION:?}")
+                write!(f, "unsupported spec_version {v:?}; this parser supports {SUPPORTED_SPEC_VERSIONS:?}")
             }
             ValidationError::MultipleEntryNodes(n) => {
                 write!(f, "flow has {n} entry nodes; at most one is allowed")
@@ -74,6 +104,22 @@ impl fmt::Display for ValidationError {
                      vendor prefix must match [a-z][a-z0-9_-]{{0,31}}"
                 )
             }
+            ValidationError::V2NodeInV1Document { node, node_type } => {
+                write!(
+                    f,
+                    "node {node:?} uses v2 node type {node_type:?} but the document \
+                     declares spec_version \"1\"; set spec_version to \"2\""
+                )
+            }
+            ValidationError::InvalidNodeData { node, message } => {
+                write!(f, "node {node:?} has invalid data: {message}")
+            }
+            ValidationError::UnknownOperator { node, operator } => {
+                write!(f, "node {node:?} uses unknown operator {operator:?}")
+            }
+            ValidationError::MissingHandleEdge { node, handle } => {
+                write!(f, "node {node:?} declares handle {handle:?} but no edge leaves it via that handle")
+            }
         }
     }
 }
@@ -90,24 +136,26 @@ pub fn validate(flow: &SavedFlow) -> Vec<ValidationError> {
         errors.push(ValidationError::InvalidFlowId(flow.id.clone()));
     }
 
-    if flow.spec_version != SPEC_VERSION {
+    if !SUPPORTED_SPEC_VERSIONS.contains(&flow.spec_version.as_str()) {
         errors.push(ValidationError::UnsupportedSpecVersion(
             flow.spec_version.clone(),
         ));
     }
 
-    validate_definition(&flow.flow, &mut errors);
+    validate_definition(&flow.flow, &flow.spec_version, &mut errors);
     errors
 }
 
 /// Validate a bare [`FlowDefinition`] (the graph only, no envelope fields).
+///
+/// Node types are checked against the current [`crate::SPEC_VERSION`] (v2).
 pub fn validate_definition_only(def: &FlowDefinition) -> Vec<ValidationError> {
     let mut errors = Vec::new();
-    validate_definition(def, &mut errors);
+    validate_definition(def, crate::SPEC_VERSION, &mut errors);
     errors
 }
 
-fn validate_definition(def: &FlowDefinition, errors: &mut Vec<ValidationError>) {
+fn validate_definition(def: &FlowDefinition, spec_version: &str, errors: &mut Vec<ValidationError>) {
     // Entry-node count.
     let entry_count = def
         .nodes
@@ -124,23 +172,35 @@ fn validate_definition(def: &FlowDefinition, errors: &mut Vec<ValidationError>) 
         if !seen_nodes.insert(n.id.as_str()) {
             errors.push(ValidationError::DuplicateNodeId(n.id.clone()));
         }
-        // Vendor prefix check for custom node types.
-        if let FlowNodeType::Custom(ref s) = n.node_type {
-            if let Some((prefix, _)) = s.split_once(':') {
-                if !is_valid_vendor(prefix) {
+        match &n.node_type {
+            // Vendor prefix check for custom node types.
+            FlowNodeType::Custom(s) => {
+                if let Some((prefix, _)) = s.split_once(':') {
+                    if !is_valid_vendor(prefix) {
+                        errors.push(ValidationError::InvalidVendorNamespace {
+                            node: n.id.clone(),
+                            node_type: s.clone(),
+                        });
+                    }
+                } else {
+                    // Custom strings without a colon are treated as future core
+                    // types — not vendor-namespaced. They are accepted but flagged
+                    // here as an invalid vendor namespace so authors notice.
                     errors.push(ValidationError::InvalidVendorNamespace {
                         node: n.id.clone(),
                         node_type: s.clone(),
                     });
                 }
-            } else {
-                // Custom strings without a colon are treated as future core
-                // types — not vendor-namespaced. They are accepted but flagged
-                // here as an invalid vendor namespace so authors notice.
-                errors.push(ValidationError::InvalidVendorNamespace {
-                    node: n.id.clone(),
-                    node_type: s.clone(),
-                });
+            }
+            FlowNodeType::Core(core) => {
+                // v2 node types require spec_version "2".
+                if spec_version == "1" && core.is_v2() {
+                    errors.push(ValidationError::V2NodeInV1Document {
+                        node: n.id.clone(),
+                        node_type: core.as_str().to_string(),
+                    });
+                }
+                validate_core_node_data(n, *core, def, errors);
             }
         }
     }
@@ -164,6 +224,92 @@ fn validate_definition(def: &FlowDefinition, errors: &mut Vec<ValidationError>) 
                 target: e.target.clone(),
             });
         }
+    }
+}
+
+/// Whether an edge leaves `node_id` via the named `source_handle`.
+fn has_handle_edge(def: &FlowDefinition, node_id: &str, handle: &str) -> bool {
+    def.edges
+        .iter()
+        .any(|e| e.source == node_id && e.source_handle.as_deref() == Some(handle))
+}
+
+/// Per-node-type `data` validation for the structured core nodes. Best-effort:
+/// only the nodes whose routing/behavior depends on `data` shape are checked
+/// here (`conditional`, `branch`). Effector nodes are validated by the runtime.
+fn validate_core_node_data(
+    node: &FlowNode,
+    core: CoreNodeType,
+    def: &FlowDefinition,
+    errors: &mut Vec<ValidationError>,
+) {
+    match core {
+        CoreNodeType::Conditional => {
+            match serde_json::from_value::<ConditionalData>(node.data.clone()) {
+                Ok(data) => {
+                    for cond in &data.conditions {
+                        if Operator::from_wire(&cond.operator).is_none() {
+                            errors.push(ValidationError::UnknownOperator {
+                                node: node.id.clone(),
+                                operator: cond.operator.clone(),
+                            });
+                        }
+                        if !has_handle_edge(def, &node.id, &cond.handle) {
+                            errors.push(ValidationError::MissingHandleEdge {
+                                node: node.id.clone(),
+                                handle: cond.handle.clone(),
+                            });
+                        }
+                    }
+                    if let Some(dh) = &data.default_handle
+                        && !has_handle_edge(def, &node.id, dh)
+                    {
+                        errors.push(ValidationError::MissingHandleEdge {
+                            node: node.id.clone(),
+                            handle: dh.clone(),
+                        });
+                    }
+                }
+                Err(e) => errors.push(ValidationError::InvalidNodeData {
+                    node: node.id.clone(),
+                    message: format!("expected conditional data: {e}"),
+                }),
+            }
+        }
+        CoreNodeType::Branch => {
+            match serde_json::from_value::<BranchData>(node.data.clone()) {
+                Ok(data) => {
+                    if data.outputs.is_empty() {
+                        errors.push(ValidationError::InvalidNodeData {
+                            node: node.id.clone(),
+                            message: "branch must declare at least one output".into(),
+                        });
+                    }
+                    for out in &data.outputs {
+                        if !has_handle_edge(def, &node.id, &out.handle) {
+                            errors.push(ValidationError::MissingHandleEdge {
+                                node: node.id.clone(),
+                                handle: out.handle.clone(),
+                            });
+                        }
+                    }
+                    if let Some(dh) = &data.default_handle
+                        && !has_handle_edge(def, &node.id, dh)
+                    {
+                        errors.push(ValidationError::MissingHandleEdge {
+                            node: node.id.clone(),
+                            handle: dh.clone(),
+                        });
+                    }
+                }
+                Err(e) => errors.push(ValidationError::InvalidNodeData {
+                    node: node.id.clone(),
+                    message: format!("expected branch data: {e}"),
+                }),
+            }
+        }
+        // Other core nodes: no data-shape validation at the spec layer.
+        _ => {}
     }
 }
 
@@ -262,13 +408,112 @@ mod tests {
     }
 
     #[test]
+    fn both_spec_versions_accepted() {
+        let mut sf = saved(FlowDefinition {
+            nodes: vec![entry("e")],
+            edges: vec![],
+        });
+        sf.spec_version = "1".into();
+        assert!(validate(&sf).is_empty());
+        sf.spec_version = "2".into();
+        assert!(validate(&sf).is_empty());
+    }
+
+    #[test]
     fn unsupported_spec_version_caught() {
         let mut sf = saved(FlowDefinition::default());
-        sf.spec_version = "2".into();
+        sf.spec_version = "3".into();
         let errs = validate(&sf);
         assert!(errs
             .iter()
             .any(|e| matches!(e, ValidationError::UnsupportedSpecVersion(_))));
+    }
+
+    fn core(id: &str, ty: CoreNodeType, data: serde_json::Value) -> FlowNode {
+        FlowNode {
+            id: id.into(),
+            node_type: FlowNodeType::Core(ty),
+            data,
+            position: [0.0, 0.0],
+        }
+    }
+    fn eh(id: &str, src: &str, tgt: &str, handle: &str) -> FlowEdge {
+        FlowEdge {
+            id: id.into(),
+            source: src.into(),
+            target: tgt.into(),
+            source_handle: Some(handle.into()),
+            target_handle: None,
+        }
+    }
+
+    #[test]
+    fn v2_node_in_v1_document_caught() {
+        let def = FlowDefinition {
+            nodes: vec![entry("e"), core("c", CoreNodeType::Conditional, json!({ "conditions": [] }))],
+            edges: vec![edge("x", "e", "c")],
+        };
+        let mut sf = saved(def);
+        sf.spec_version = "1".into();
+        let errs = validate(&sf);
+        assert!(errs.iter().any(|e| matches!(e, ValidationError::V2NodeInV1Document { .. })));
+    }
+
+    #[test]
+    fn valid_conditional_v2_passes() {
+        let def = FlowDefinition {
+            nodes: vec![
+                entry("e"),
+                core("c", CoreNodeType::Conditional, json!({
+                    "conditions": [ { "handle": "hot", "variable": "_last", "operator": "gt", "value": 50 } ],
+                    "default_handle": "cold"
+                })),
+                prompt("hot_node"),
+                prompt("cold_node"),
+            ],
+            edges: vec![
+                edge("e0", "e", "c"),
+                eh("e1", "c", "hot_node", "hot"),
+                eh("e2", "c", "cold_node", "cold"),
+            ],
+        };
+        let mut sf = saved(def);
+        sf.spec_version = "2".into();
+        assert!(validate(&sf).is_empty(), "{:?}", validate(&sf));
+    }
+
+    #[test]
+    fn conditional_unknown_operator_and_missing_edge_caught() {
+        let def = FlowDefinition {
+            nodes: vec![
+                entry("e"),
+                core("c", CoreNodeType::Conditional, json!({
+                    "conditions": [ { "handle": "hot", "variable": "_last", "operator": "bogus", "value": 1 } ]
+                })),
+            ],
+            edges: vec![edge("e0", "e", "c")], // no "hot" handle edge
+        };
+        let mut sf = saved(def);
+        sf.spec_version = "2".into();
+        let errs = validate(&sf);
+        assert!(errs.iter().any(|e| matches!(e, ValidationError::UnknownOperator { .. })));
+        assert!(errs.iter().any(|e| matches!(e, ValidationError::MissingHandleEdge { .. })));
+    }
+
+    #[test]
+    fn branch_bad_data_caught() {
+        let def = FlowDefinition {
+            nodes: vec![
+                entry("e"),
+                // missing required `query` and `outputs`
+                core("b", CoreNodeType::Branch, json!({ "persona": "weather-agent" })),
+            ],
+            edges: vec![edge("e0", "e", "b")],
+        };
+        let mut sf = saved(def);
+        sf.spec_version = "2".into();
+        let errs = validate(&sf);
+        assert!(errs.iter().any(|e| matches!(e, ValidationError::InvalidNodeData { .. })));
     }
 
     #[test]

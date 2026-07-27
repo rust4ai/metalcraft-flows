@@ -19,8 +19,7 @@ pub fn save_flow(dir: &Path, flow: &SavedFlow) -> io::Result<()> {
     }
     std::fs::create_dir_all(dir)?;
     let path = dir.join(format!("{}.json", flow.id));
-    let json = serde_json::to_string_pretty(flow)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let json = serde_json::to_string_pretty(flow).map_err(io::Error::other)?;
     std::fs::write(&path, json)
 }
 

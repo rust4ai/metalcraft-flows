@@ -40,8 +40,7 @@ pub fn append_flow_log(log_path: &Path, entry: &FlowLogEntry) -> io::Result<()> 
         let drop = entries.len() - DEFAULT_LOG_RETENTION;
         entries.drain(0..drop);
     }
-    let json = serde_json::to_string_pretty(&entries)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let json = serde_json::to_string_pretty(&entries).map_err(io::Error::other)?;
     std::fs::write(log_path, json)
 }
 
