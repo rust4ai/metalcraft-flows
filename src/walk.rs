@@ -9,8 +9,10 @@ use std::collections::{HashMap, HashSet, VecDeque};
 /// Routing rules (a handle-aware step, unlike [`walk_bfs`]):
 ///
 /// 1. If `handle` is `Some`, prefer the edge whose `source_handle` equals it.
-/// 2. Otherwise (or if no handle matched), fall back to an outgoing edge with no
-///    `source_handle` (the default/unlabeled edge).
+/// 2. Otherwise (or if no handle matched), fall back to the node's *default*
+///    output edge — one whose `source_handle` is absent **or** the literal
+///    `"default"`. (Visual editors serialize an unlabeled edge with the handle
+///    id `"default"`, so both must count as the default output.)
 ///
 /// Returns the target node id, or `None` if no edge applies. Runtimes use this to
 /// route `conditional` / `branch` / `ok`/`error` outcomes.
@@ -25,7 +27,7 @@ pub fn next_by_handle(def: &FlowDefinition, source: &str, handle: Option<&str>) 
     }
     def.edges
         .iter()
-        .find(|e| e.source == source && e.source_handle.is_none())
+        .find(|e| e.source == source && matches!(e.source_handle.as_deref(), None | Some("default")))
         .map(|e| e.target.clone())
 }
 
@@ -123,6 +125,23 @@ mod tests {
         };
         assert_eq!(next_by_handle(&def, "c", Some("hot")).as_deref(), Some("hot_node"));
         assert_eq!(next_by_handle(&def, "c", Some("cold")).as_deref(), Some("cold_node"));
+    }
+
+    #[test]
+    fn next_by_handle_treats_default_label_as_unlabeled() {
+        // A visual editor serializes an unlabeled edge with source_handle
+        // "default"; routing with no handle must still follow it.
+        let def = FlowDefinition {
+            nodes: vec![],
+            edges: vec![eh("1", "entry", "check", "default")],
+        };
+        assert_eq!(next_by_handle(&def, "entry", None).as_deref(), Some("check"));
+        // And a named route still wins over the default edge.
+        let def2 = FlowDefinition {
+            nodes: vec![],
+            edges: vec![eh("1", "c", "d_node", "default"), eh("2", "c", "ok_node", "ok")],
+        };
+        assert_eq!(next_by_handle(&def2, "c", Some("ok")).as_deref(), Some("ok_node"));
     }
 
     #[test]
