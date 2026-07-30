@@ -105,6 +105,20 @@ pub struct BranchOutput {
     pub var: Option<String>,
 }
 
+/// The reserved output handle a [`branch`](crate::CoreNodeType::Branch) node
+/// takes on a **protocol failure** — an LLM/API error, a timeout, the agent
+/// step budget being exhausted with no selection, or a chosen handle whose
+/// payload does not satisfy its declared schema.
+///
+/// This mirrors the `error` handle emitted by `prompt`/`tool`/`http` nodes, so
+/// every executable node shares one failure convention. The rail is always
+/// available and **optional to wire**: a runtime routes to it on failure, and if
+/// nothing is wired to it (and no `default_handle` is set) the run fails loudly
+/// rather than reporting a false success. Because the rail carries a string
+/// reason, a `branch` output that explicitly declares this handle must type its
+/// `schema` as a string (or omit it) — see [`crate::validate`].
+pub const BRANCH_ERROR_HANDLE: &str = "error";
+
 /// `data` for a [`branch`](crate::CoreNodeType::Branch) node (the LLM classifier).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BranchData {
@@ -118,10 +132,11 @@ pub struct BranchData {
     /// Model override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// Fallback handle for timeout / no valid choice.
+    /// Legacy fallback handle for a protocol failure. When unset, the runtime
+    /// routes the reserved [`BRANCH_ERROR_HANDLE`] instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_handle: Option<String>,
-    /// Seconds before falling back to `default_handle`.
+    /// Seconds before treating the classification as failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout: Option<u64>,
 }

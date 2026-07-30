@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2]
+
+### Added
+
+- `BRANCH_ERROR_HANDLE` (`"error"`): the reserved output handle a `branch` node
+  takes on a protocol failure (LLM/API error, timeout, step-budget exhaustion, or
+  a payload that fails its declared schema). Documents the shared `error`
+  convention already emitted by `prompt`/`tool`/`http`; see SPEC §5.4.
+
+### Changed
+
+- `validate()` now rejects a `branch` output that declares the reserved `error`
+  handle with a non-string `schema` (the rail carries a string reason). Omit the
+  schema or type it as `{"type":"string"}`.
+
 ## [0.2.0]
 
 Spec **v2**: flows become a stateful state machine (shared variables, typed edge

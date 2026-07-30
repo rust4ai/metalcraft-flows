@@ -292,6 +292,23 @@ fn validate_core_node_data(
                                 handle: out.handle.clone(),
                             });
                         }
+                        // The reserved `error` rail carries a string reason (see
+                        // `BRANCH_ERROR_HANDLE`). A branch may still declare it
+                        // explicitly so the model can select it, but its payload
+                        // type must stay coherent with the runtime-injected
+                        // reason: string, or schema omitted.
+                        if out.handle == crate::BRANCH_ERROR_HANDLE
+                            && out.schema.as_ref().is_some_and(|s| {
+                                s.get("type").and_then(|t| t.as_str()) != Some("string")
+                            })
+                        {
+                            errors.push(ValidationError::InvalidNodeData {
+                                node: node.id.clone(),
+                                message: "the reserved `error` handle carries a string reason; \
+                                          its schema must be omitted or {\"type\":\"string\"}"
+                                    .into(),
+                            });
+                        }
                     }
                     if let Some(dh) = &data.default_handle
                         && !has_handle_edge(def, &node.id, dh)
@@ -514,6 +531,69 @@ mod tests {
         sf.spec_version = "2".into();
         let errs = validate(&sf);
         assert!(errs.iter().any(|e| matches!(e, ValidationError::InvalidNodeData { .. })));
+    }
+
+    #[test]
+    fn branch_error_handle_with_nonstring_schema_caught() {
+        // A branch that declares the reserved `error` handle with an object
+        // schema conflicts with the string reason the runtime injects.
+        let def = FlowDefinition {
+            nodes: vec![
+                entry("e"),
+                core("b", CoreNodeType::Branch, json!({
+                    "query": "classify",
+                    "outputs": [
+                        { "handle": "ok", "schema": { "type": "string" } },
+                        { "handle": "error", "schema": { "type": "object" } }
+                    ]
+                })),
+                prompt("ok_t"),
+                prompt("err_t"),
+            ],
+            edges: vec![
+                edge("e0", "e", "b"),
+                eh("e1", "b", "ok_t", "ok"),
+                eh("e2", "b", "err_t", "error"),
+            ],
+        };
+        let mut sf = saved(def);
+        sf.spec_version = "2".into();
+        let errs = validate(&sf);
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                ValidationError::InvalidNodeData { node, message }
+                    if node == "b" && message.contains("`error` handle")
+            )),
+            "expected reserved-error-handle error, got {errs:?}"
+        );
+    }
+
+    #[test]
+    fn branch_error_handle_with_string_schema_passes() {
+        // The same branch with a string-typed (or omitted) `error` schema is fine.
+        let def = FlowDefinition {
+            nodes: vec![
+                entry("e"),
+                core("b", CoreNodeType::Branch, json!({
+                    "query": "classify",
+                    "outputs": [
+                        { "handle": "ok", "schema": { "type": "string" } },
+                        { "handle": "error", "schema": { "type": "string" } }
+                    ]
+                })),
+                prompt("ok_t"),
+                prompt("err_t"),
+            ],
+            edges: vec![
+                edge("e0", "e", "b"),
+                eh("e1", "b", "ok_t", "ok"),
+                eh("e2", "b", "err_t", "error"),
+            ],
+        };
+        let mut sf = saved(def);
+        sf.spec_version = "2".into();
+        assert!(validate(&sf).is_empty(), "{:?}", validate(&sf));
     }
 
     #[test]

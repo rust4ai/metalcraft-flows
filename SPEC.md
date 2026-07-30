@@ -209,6 +209,21 @@ node as `_last`. For a `branch`, each `outputs[]` entry is a tool definition: th
 model selects exactly one handle and fills its `schema`-typed arguments, which
 become the payload. `prompt`/`tool`/`http` emit `ok` (result) / `error` handles.
 
+**The reserved `error` handle.** Every executable node shares one failure
+convention: on a **protocol failure** it routes an `error` handle whose payload
+(`_last`) is a string reason. For `prompt`/`tool`/`http` this is the failure of
+the single operation. For `branch` a protocol failure is an LLM/API error, a
+timeout, the classifier exhausting its step budget without selecting a handle, or
+a chosen handle whose payload does not satisfy its declared `schema` — distinct
+from any *semantic* outcome the model deliberately picks. The `error` rail is
+always available and **optional to wire**: a runtime routes to it on failure, and
+if nothing is wired to it (and, for `branch`, no `default_handle` is set) the run
+**fails** rather than reporting success. A `branch` MAY also declare `error` in
+its `outputs[]` so the model can select it explicitly; because the rail carries a
+string reason, such a declaration's `schema` MUST be omitted or `{"type":
+"string"}`. `branch.default_handle` is a legacy fallback that, when set, absorbs
+protocol failures in place of the `error` rail.
+
 ### 5.5 Conditional operators (v2)
 
 `conditional.conditions[].operator` is one of: `equals`, `not_equals`,

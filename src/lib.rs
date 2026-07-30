@@ -43,6 +43,7 @@ pub use model::{
     CoreNodeType, FlowDefinition, FlowEdge, FlowNode, FlowNodeType, FlowSummary, SavedFlow,
     SPEC_VERSION, SUPPORTED_SPEC_VERSIONS,
 };
+pub use nodes::BRANCH_ERROR_HANDLE;
 pub use state::Variables;
 pub use template::resolve as resolve_template;
 pub use validate::{validate, ValidationError};
