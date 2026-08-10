@@ -97,6 +97,7 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: updated_at.into(),
             enabled: false,
+            requires: None,
             flow: FlowDefinition {
                 nodes: vec![FlowNode {
                     id: "e".into(),

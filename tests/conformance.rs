@@ -93,6 +93,53 @@ fn vendor_node_type_preserved_through_round_trip() {
     assert!(reserialized.contains("\"channel\":\"#ops\""));
 }
 
+#[test]
+fn requires_demo_parses_validates_and_derives() {
+    use metalcraft_flows::{check_requirements, derive_requires, AvailablePack, Unmet};
+
+    let raw = read_example("requires_demo.json");
+    let flow: SavedFlow = serde_json::from_str(&raw).expect("should parse");
+    assert_eq!(flow.spec_version, "2");
+
+    // The declared block is well-formed.
+    let errs = validate(&flow);
+    assert!(errs.is_empty(), "expected no validation errors, got: {errs:?}");
+
+    // Derivation recovers the tool surface from the graph. It does NOT recover
+    // the `cloudflare` pack id here: a bare `tool_name` can't be mapped back to a
+    // pack without a registry, so that pack entry was stamped by the authoring
+    // host. (A `sub_agent` `data.pack` or a `vendor:` node WOULD be derivable.)
+    let declared = flow.requires.clone().unwrap();
+    let derived = derive_requires(&flow);
+    assert_eq!(declared.tools, derived.tools);
+    assert_eq!(derived.tools, vec!["cloudflare_purge_cache".to_string()]);
+    assert!(
+        derived.packs.is_empty(),
+        "tool_name is not registry-mappable in-crate: {:?}",
+        derived.packs
+    );
+    assert_eq!(declared.packs[0].id, "cloudflare");
+
+    // A host with a compatible cloudflare pack satisfies it; one without does not.
+    let ok = check_requirements(
+        &declared,
+        &[AvailablePack {
+            id: "cloudflare".into(),
+            version: "1.3.1".into(),
+            content_sha256: None,
+        }],
+    );
+    assert!(ok.is_empty(), "{ok:?}");
+
+    let missing = check_requirements(&declared, &[]);
+    assert!(matches!(missing.as_slice(), [Unmet::MissingPack { id, .. }] if id == "cloudflare"));
+
+    // Round-trips losslessly (including the requires block).
+    let again: SavedFlow =
+        serde_json::from_str(&serde_json::to_string(&flow).unwrap()).unwrap();
+    assert_eq!(flow, again);
+}
+
 // --- v2: the Madrid weather user story (deterministic routing) ---------------
 
 use metalcraft_flows::{evaluate, next_by_handle, nodes::ConditionalData, Operator, Variables};

@@ -71,6 +71,12 @@ pub enum ValidationError {
         /// The handle that has no `source_handle` edge leaving the node.
         handle: String,
     },
+    /// A `requires` entry is malformed: a bad pack id, an unparseable semver
+    /// range or resolved version, a malformed content hash, or a duplicate id.
+    InvalidRequires {
+        /// What was wrong.
+        message: String,
+    },
 }
 
 impl fmt::Display for ValidationError {
@@ -120,6 +126,9 @@ impl fmt::Display for ValidationError {
             ValidationError::MissingHandleEdge { node, handle } => {
                 write!(f, "node {node:?} declares handle {handle:?} but no edge leaves it via that handle")
             }
+            ValidationError::InvalidRequires { message } => {
+                write!(f, "invalid `requires`: {message}")
+            }
         }
     }
 }
@@ -142,8 +151,61 @@ pub fn validate(flow: &SavedFlow) -> Vec<ValidationError> {
         ));
     }
 
+    if let Some(req) = &flow.requires {
+        validate_requires(req, &mut errors);
+    }
+
     validate_definition(&flow.flow, &flow.spec_version, &mut errors);
     errors
+}
+
+/// Validate the well-formedness of a [`Requires`](crate::requires::Requires)
+/// block. This checks *shape only* — that ids, ranges, and hashes parse — not
+/// whether the packs are installed or compatible (that is host-specific and
+/// belongs to [`crate::requires::check_requirements`]).
+fn validate_requires(req: &crate::requires::Requires, errors: &mut Vec<ValidationError>) {
+    use crate::requires::{is_valid_pack_id, is_valid_sha256};
+
+    let mut seen: HashSet<&str> = HashSet::new();
+    for pr in &req.packs {
+        if !is_valid_pack_id(&pr.id) {
+            errors.push(ValidationError::InvalidRequires {
+                message: format!(
+                    "pack id {:?} must match [a-z0-9][a-z0-9_-]{{0,63}}",
+                    pr.id
+                ),
+            });
+        }
+        if !seen.insert(pr.id.as_str()) {
+            errors.push(ValidationError::InvalidRequires {
+                message: format!("duplicate pack requirement {:?}", pr.id),
+            });
+        }
+        if let Some(range) = &pr.version
+            && semver::VersionReq::parse(range).is_err()
+        {
+            errors.push(ValidationError::InvalidRequires {
+                message: format!("pack {:?} has unparseable version range {range:?}", pr.id),
+            });
+        }
+        if let Some(rv) = &pr.resolved_version
+            && semver::Version::parse(rv).is_err()
+        {
+            errors.push(ValidationError::InvalidRequires {
+                message: format!("pack {:?} has unparseable resolved_version {rv:?}", pr.id),
+            });
+        }
+        if let Some(hash) = &pr.content_sha256
+            && !is_valid_sha256(hash)
+        {
+            errors.push(ValidationError::InvalidRequires {
+                message: format!(
+                    "pack {:?} content_sha256 must be 64 lowercase hex chars",
+                    pr.id
+                ),
+            });
+        }
+    }
 }
 
 /// Validate a bare [`FlowDefinition`] (the graph only, no envelope fields).
@@ -369,6 +431,7 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
             enabled: false,
+            requires: None,
             flow: def,
         }
     }
@@ -633,5 +696,71 @@ mod tests {
         assert!(errs
             .iter()
             .any(|e| matches!(e, ValidationError::InvalidVendorNamespace { .. })));
+    }
+
+    #[test]
+    fn well_formed_requires_passes() {
+        let mut sf = saved(FlowDefinition {
+            nodes: vec![entry("e")],
+            edges: vec![],
+        });
+        sf.requires = Some(crate::requires::Requires {
+            packs: vec![crate::requires::PackRequirement {
+                id: "cloudflare".into(),
+                version: Some(">=1.2.0, <2.0.0".into()),
+                content_sha256: Some("a1b2c3d4".repeat(8)),
+                resolved_version: Some("1.3.1".into()),
+                ..crate::requires::PackRequirement::new("cloudflare")
+            }],
+            tools: vec!["cloudflare_purge_cache".into()],
+        });
+        assert!(validate(&sf).is_empty(), "{:?}", validate(&sf));
+    }
+
+    #[test]
+    fn malformed_requires_caught() {
+        for req in [
+            // bad id
+            crate::requires::Requires {
+                packs: vec![crate::requires::PackRequirement::new("Bad Id")],
+                tools: vec![],
+            },
+            // unparseable version range
+            crate::requires::Requires {
+                packs: vec![crate::requires::PackRequirement {
+                    version: Some("not-a-range".into()),
+                    ..crate::requires::PackRequirement::new("cloudflare")
+                }],
+                tools: vec![],
+            },
+            // bad hash
+            crate::requires::Requires {
+                packs: vec![crate::requires::PackRequirement {
+                    content_sha256: Some("tooshort".into()),
+                    ..crate::requires::PackRequirement::new("cloudflare")
+                }],
+                tools: vec![],
+            },
+            // duplicate id
+            crate::requires::Requires {
+                packs: vec![
+                    crate::requires::PackRequirement::new("cloudflare"),
+                    crate::requires::PackRequirement::new("cloudflare"),
+                ],
+                tools: vec![],
+            },
+        ] {
+            let mut sf = saved(FlowDefinition {
+                nodes: vec![entry("e")],
+                edges: vec![],
+            });
+            sf.requires = Some(req);
+            let errs = validate(&sf);
+            assert!(
+                errs.iter()
+                    .any(|e| matches!(e, ValidationError::InvalidRequires { .. })),
+                "expected InvalidRequires, got {errs:?}"
+            );
+        }
     }
 }

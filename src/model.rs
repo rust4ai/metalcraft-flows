@@ -215,6 +215,10 @@ pub struct SavedFlow {
     /// Whether the flow should be executed by a scheduler. Defaults to `false`.
     #[serde(default)]
     pub enabled: bool,
+    /// Declared integration-pack / tool dependencies. Absent on legacy documents;
+    /// see [`crate::requires`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requires: Option<crate::requires::Requires>,
     /// The graph definition.
     pub flow: FlowDefinition,
 }
@@ -329,6 +333,7 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-02T00:00:00Z".into(),
             enabled: true,
+            requires: None,
             flow: FlowDefinition {
                 nodes: vec![FlowNode {
                     id: "n1".into(),

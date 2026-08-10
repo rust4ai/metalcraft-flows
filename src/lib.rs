@@ -11,6 +11,8 @@
 //! - [`model`] — core types: [`FlowDefinition`], [`FlowNode`], [`FlowEdge`],
 //!   [`SavedFlow`], [`FlowNodeType`], [`CoreNodeType`].
 //! - [`nodes`] — typed views over each node type's `data` payload.
+//! - [`requires`] — declared integration-pack / tool dependencies and their
+//!   validation and satisfaction checks.
 //! - [`walk`] — graph traversal: BFS reachability and handle-aware stepping.
 //! - [`eval`] — deterministic predicate evaluation for `conditional` nodes.
 //! - [`template`] — `{{path}}` interpolation for string fields.
@@ -25,6 +27,7 @@
 pub mod eval;
 pub mod model;
 pub mod nodes;
+pub mod requires;
 pub mod state;
 pub mod template;
 pub mod validate;
@@ -44,6 +47,10 @@ pub use model::{
     SPEC_VERSION, SUPPORTED_SPEC_VERSIONS,
 };
 pub use nodes::BRANCH_ERROR_HANDLE;
+pub use requires::{
+    check_requirements, check_tools, derive_requires, AvailablePack, PackRequirement, Requires,
+    Unmet,
+};
 pub use state::Variables;
 pub use template::resolve as resolve_template;
 pub use validate::{validate, ValidationError};

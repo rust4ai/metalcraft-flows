@@ -45,6 +45,7 @@ A Flow saved to disk is a single JSON object:
 | `created_at`   | string  | yes      | ISO-8601 / RFC-3339 timestamp.                                               |
 | `updated_at`   | string  | yes      | ISO-8601 / RFC-3339 timestamp.                                               |
 | `enabled`      | boolean | no       | Defaults to `false`. Whether the flow should be executed by a scheduler.     |
+| `requires`     | object  | no       | Declared integration-pack / tool dependencies. See §1.2.                     |
 | `flow`         | object  | yes      | The `FlowDefinition` — see §2.                                               |
 
 ### 1.1 `id` constraints
@@ -55,6 +56,56 @@ be safe across filesystems:
 - Length 1–64 characters.
 - Characters `[A-Za-z0-9-]` only.
 - Empty strings are rejected.
+
+### 1.2 `requires` (dependencies)
+
+An optional envelope declaring the integration packs and tool surface a flow
+needs to run. It lets a host validate dependencies at import / enable /
+run-preflight time instead of failing silently mid-execution (a `tool` node whose
+providing pack is disabled would otherwise route to the reserved `error` handle
+or fail the run). Absent on legacy documents; ignoring it is always safe, so it
+is permitted under any `spec_version` (tooling emits it under `"2"`).
+
+```json
+"requires": {
+  "packs": [
+    {
+      "id": "cloudflare",
+      "version": ">=1.2.0, <2.0.0",
+      "content_sha256": "9f86d0…",
+      "reason": "purges the CDN cache",
+      "optional": false,
+      "resolved_version": "1.3.1"
+    }
+  ],
+  "tools": ["cloudflare_purge_cache", "cloudflare_list_zones"]
+}
+```
+
+| Field   | Type              | Required | Description                                                            |
+| ------- | ----------------- | -------- | ---------------------------------------------------------------------- |
+| `packs` | array of `PackRequirement` | no | Integration packs the flow depends on.                          |
+| `tools` | array of string   | no       | Flat tool names the flow invokes (the real binding — the API surface). |
+
+`PackRequirement`:
+
+| Field              | Type    | Required | Description                                                                     |
+| ------------------ | ------- | -------- | ------------------------------------------------------------------------------- |
+| `id`               | string  | yes      | Pack id / slug (stable identity). Must match `^[a-z0-9][a-z0-9_-]{0,63}$`.       |
+| `version`          | string  | no       | Semver range the pack must satisfy. Absent = any version. The compatibility contract. |
+| `content_sha256`   | string  | no       | Optional integrity lock: exact 64-char lowercase-hex canonical content hash.    |
+| `reason`           | string  | no       | Human-readable reason, surfaced in an install/enable prompt.                    |
+| `optional`         | boolean | no       | Defaults `false`. When `true`, an unmet requirement is a warning, not a failure. |
+| `resolved_version` | string  | no       | The concrete version the authoring host resolved to (a reproducibility hint).   |
+
+Semantics: `id` + `version` (a semver **range**) express the dependency's
+*compatibility contract* — the primary expression of intent. `content_sha256` is
+an optional *integrity lock* (byte-exact), not the identity. Validation checks
+well-formedness only (ids, ranges, and hashes parse); whether a pack is installed
+and compatible is evaluated by the host against its own inventory. A host may
+auto-derive `tools` (and derivable pack ids — from `sub_agent` `data.pack` scoping
+and `vendor:` node types) from the graph; a bare `tool_name` is not mappable back
+to a pack without a registry, so those pack entries are stamped by the host.
 
 ---
 
