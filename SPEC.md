@@ -44,7 +44,8 @@ A Flow saved to disk is a single JSON object:
 | `name`         | string  | yes      | Human-readable label.                                                        |
 | `created_at`   | string  | yes      | ISO-8601 / RFC-3339 timestamp.                                               |
 | `updated_at`   | string  | yes      | ISO-8601 / RFC-3339 timestamp.                                               |
-| `enabled`      | boolean | no       | Defaults to `false`. Whether the flow should be executed by a scheduler.     |
+| `enabled`      | boolean | no       | Defaults to `false`. Master switch: whether a scheduler runs this flow at all. |
+| `schedules`    | array   | no       | Flow-level schedules — **when** the flow runs. See §1.3. Defaults to `[]`.    |
 | `requires`     | object  | no       | Declared integration-pack / tool dependencies. See §1.2.                     |
 | `flow`         | object  | yes      | The `FlowDefinition` — see §2.                                               |
 
@@ -106,6 +107,42 @@ and compatible is evaluated by the host against its own inventory. A host may
 auto-derive `tools` (and derivable pack ids — from `sub_agent` `data.pack` scoping
 and `vendor:` node types) from the graph; a bare `tool_name` is not mappable back
 to a pack without a registry, so those pack entries are stamped by the host.
+
+### 1.3 `schedules` (when the flow runs)
+
+`schedules` is an array of `FlowScheduleSpec` objects. Each declares one trigger
+plus the toggle and overrides applied when it fires. A flow may carry **any
+number** of schedules — e.g. one at 08:00 and one at 18:00 — and each fires
+independently.
+
+| Field      | Type    | Required | Description                                                                                  |
+| ---------- | ------- | -------- | -------------------------------------------------------------------------------------------- |
+| `id`       | string  | yes      | Stable id, unique within the flow. Author-assigned so upgrades can diff by id.               |
+| `enabled`  | boolean | no       | Defaults to `true`. Toggles this trigger without deleting it. Distinct from flow `enabled`.  |
+| `type`     | string  | yes      | The trigger kind: `"manual"` \| `"minutes"` \| `"hours"` \| `"cron"`.                         |
+| `interval` | number  | cond.    | Required for `minutes`/`hours`; must be positive.                                             |
+| `cron`     | string  | cond.    | Required for `cron`; a cron expression. This spec does not parse it — the host runtime does.  |
+| `name`     | string  | no       | Human-readable label for editors.                                                            |
+| `timezone` | string  | no       | IANA timezone a `cron` trigger is evaluated in. Absent = host local time. Ignored otherwise.  |
+| `inputs`   | object  | no       | Inputs handed to the run when this schedule fires (per-schedule parameters).                  |
+| `persona`  | string  | no       | Persona override for runs from this schedule.                                                 |
+
+**Precedence (host runtimes MUST follow):**
+
+1. If `schedules` is present and non-empty, it is authoritative; any legacy
+   `entry.data.schedule_type` is ignored.
+2. Otherwise, if the entry node declares `schedule_type`, the host synthesizes a
+   single schedule from it (the legacy v1 behavior), preserving `entry.data.persona`.
+3. Otherwise, the flow has a single `manual` schedule (runs only on explicit
+   invocation).
+
+The flow-wide `enabled` field is the **master switch**: a scheduler MUST ignore a
+flow whose `enabled` is `false`, regardless of its `schedules`. Published flows MAY
+ship default `schedules`; a host that installs such a flow seeds them, but should
+not fire them until the flow is enabled.
+
+Validation checks *shape only*: unique non-empty ids, positive intervals, and
+non-empty cron strings. Cron-expression parsing is a host concern.
 
 ---
 
@@ -191,7 +228,7 @@ Types marked **(v2)** require `spec_version = "2"` (see §6).
 
 | `node_type`    | `data` schema                                                                                                                                          | Purpose                                                                  |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------ |
-| `entry`        | `{ "schedule_type": "manual"\|"minutes"\|"hours"\|"cron", "interval"?: number, "cron"?: string, "inputs"?: { [name]: InputSpec } }`                    | Marks the flow's start. At most one per `FlowDefinition` (see §5.3). **(v2)** `inputs` declares typed invocation parameters that seed flow state. |
+| `entry`        | `{ "inputs"?: { [name]: InputSpec }, "schedule_type"?: … }`                    | Marks the flow's start. At most one per `FlowDefinition` (see §5.3). **(v2)** `inputs` declares typed invocation parameters that seed flow state. **Legacy:** `schedule_type`/`interval`/`cron` here are superseded by the top-level `schedules` array (§1.3) and read only as a fallback. |
 | `prompt`       | `{ "prompt": string, "persona"?: string, "model"?: string, "output_var"?: string, "output_schema"?: object }`                                          | A natural-language instruction run by an LLM agent. **(v2)** may store its answer and emit `ok`/`error` handles. |
 | `conditional`  | **(v2)** `{ "conditions": [{ "handle": string, "variable": string, "operator": Operator, "value"?: any }], "default_handle"?: string }`                | Deterministic routing: first matching predicate's handle wins (§5.5).    |
 | `branch`       | **(v2)** `{ "query": string, "outputs": [{ "handle": string, "description"?: string, "schema"?: object, "var"?: string }], "persona"?: string, "default_handle"?: string, "timeout"?: number }` | LLM classifier: the model picks exactly one typed output handle and fills its args, which become that edge's payload (§5.4). |

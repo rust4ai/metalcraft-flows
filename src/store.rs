@@ -59,6 +59,7 @@ pub fn list_flows(dir: &Path) -> Vec<FlowSummary> {
         .filter_map(|e| {
             let data = std::fs::read_to_string(e.path()).ok()?;
             let flow: SavedFlow = serde_json::from_str(&data).ok()?;
+            let schedule_count = flow.effective_schedules().len();
             Some(FlowSummary {
                 id: flow.id,
                 name: flow.name,
@@ -66,6 +67,7 @@ pub fn list_flows(dir: &Path) -> Vec<FlowSummary> {
                 created_at: flow.created_at,
                 updated_at: flow.updated_at,
                 enabled: flow.enabled,
+                schedule_count,
             })
         })
         .collect();
@@ -97,6 +99,7 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: updated_at.into(),
             enabled: false,
+            schedules: vec![],
             requires: None,
             flow: FlowDefinition {
                 nodes: vec![FlowNode {

@@ -77,6 +77,12 @@ pub enum ValidationError {
         /// What was wrong.
         message: String,
     },
+    /// A flow-level [`schedule`](crate::FlowScheduleSpec) is malformed: an empty
+    /// or duplicate id, a non-positive interval, or an empty cron expression.
+    InvalidSchedule {
+        /// What was wrong.
+        message: String,
+    },
 }
 
 impl fmt::Display for ValidationError {
@@ -129,6 +135,9 @@ impl fmt::Display for ValidationError {
             ValidationError::InvalidRequires { message } => {
                 write!(f, "invalid `requires`: {message}")
             }
+            ValidationError::InvalidSchedule { message } => {
+                write!(f, "invalid schedule: {message}")
+            }
         }
     }
 }
@@ -155,8 +164,51 @@ pub fn validate(flow: &SavedFlow) -> Vec<ValidationError> {
         validate_requires(req, &mut errors);
     }
 
+    validate_schedules(&flow.schedules, &mut errors);
+
     validate_definition(&flow.flow, &flow.spec_version, &mut errors);
     errors
+}
+
+/// Validate the flow-level `schedules` array: non-empty unique ids, positive
+/// intervals, and non-empty cron strings. Cron *expression* parsing is the
+/// host runtime's concern (this crate has no cron dependency), so only
+/// emptiness is checked here.
+fn validate_schedules(
+    schedules: &[crate::model::FlowScheduleSpec],
+    errors: &mut Vec<ValidationError>,
+) {
+    use crate::model::ScheduleTrigger;
+
+    let mut seen: HashSet<&str> = HashSet::new();
+    for s in schedules {
+        if s.id.trim().is_empty() {
+            errors.push(ValidationError::InvalidSchedule {
+                message: "schedule id must not be empty".to_string(),
+            });
+        } else if !seen.insert(s.id.as_str()) {
+            errors.push(ValidationError::InvalidSchedule {
+                message: format!("duplicate schedule id {:?}", s.id),
+            });
+        }
+        match &s.trigger {
+            ScheduleTrigger::Manual => {}
+            ScheduleTrigger::Minutes { interval } | ScheduleTrigger::Hours { interval } => {
+                if *interval == 0 {
+                    errors.push(ValidationError::InvalidSchedule {
+                        message: format!("schedule {:?} interval must be positive", s.id),
+                    });
+                }
+            }
+            ScheduleTrigger::Cron { cron } => {
+                if cron.trim().is_empty() {
+                    errors.push(ValidationError::InvalidSchedule {
+                        message: format!("schedule {:?} has an empty cron expression", s.id),
+                    });
+                }
+            }
+        }
+    }
 }
 
 /// Validate the well-formedness of a [`Requires`](crate::requires::Requires)
@@ -431,6 +483,7 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
             enabled: false,
+            schedules: vec![],
             requires: None,
             flow: def,
         }

@@ -316,6 +316,7 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
             enabled: false,
+            schedules: vec![],
             requires: None,
             flow: FlowDefinition {
                 nodes,

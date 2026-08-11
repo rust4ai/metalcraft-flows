@@ -43,8 +43,8 @@ pub mod log;
 
 pub use eval::{evaluate, Operator};
 pub use model::{
-    CoreNodeType, FlowDefinition, FlowEdge, FlowNode, FlowNodeType, FlowSummary, SavedFlow,
-    SPEC_VERSION, SUPPORTED_SPEC_VERSIONS,
+    CoreNodeType, FlowDefinition, FlowEdge, FlowNode, FlowNodeType, FlowScheduleSpec, FlowSummary,
+    SavedFlow, ScheduleTrigger, SPEC_VERSION, SUPPORTED_SPEC_VERSIONS,
 };
 pub use nodes::BRANCH_ERROR_HANDLE;
 pub use requires::{
