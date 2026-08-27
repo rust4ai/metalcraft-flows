@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0]
+
+### Added
+
+- `schema` feature (off by default): derives `utoipa::ToSchema` on `SavedFlow`,
+  `FlowDefinition`, `FlowNode`, `FlowEdge`, `FlowSummary`, `Requires` and
+  `PackRequirement`, so a host that publishes an OpenAPI description can describe
+  a flow graph instead of typing it `object`. `FlowNodeType`'s schema is written
+  by hand: on the wire it is a string, and it stays an *open* string because any
+  `vendor:name` is valid (SPEC §5.2) — a generated client that closed over the
+  core names would refuse to load a flow the runtime is happy to run.
+- Off by default on purpose: this crate is the format, and the format should not
+  drag a web framework's derive macros into consumers that only read a file.
+
 ## [0.5.0] — spec v3
 
 ### Removed — **breaking**

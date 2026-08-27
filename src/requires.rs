@@ -24,6 +24,7 @@ use std::collections::BTreeSet;
 
 /// The dependencies a flow declares.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct Requires {
     /// Integration packs this flow needs, each with an optional version/hash
     /// contract.
@@ -44,6 +45,7 @@ impl Requires {
 
 /// A single integration-pack dependency.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct PackRequirement {
     /// Pack id / slug — the stable identity. Must match
     /// `^[a-z0-9][a-z0-9_-]{0,63}$`.

@@ -27,6 +27,7 @@ pub const SUPPORTED_SPEC_VERSIONS: &[&str] = &["1", "2", "3"];
 
 /// A single vertex in a [`FlowDefinition`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct FlowNode {
     /// Unique identifier within the enclosing [`FlowDefinition`].
     pub id: String,
@@ -179,8 +180,37 @@ impl<'de> Deserialize<'de> for FlowNodeType {
     }
 }
 
+/// Written by hand rather than derived: on the wire this is a *string*, not the
+/// tagged union the Rust type is, and a derive would describe the shape of the
+/// enum instead of the shape of the JSON.
+///
+/// Deliberately **not** an `enum` of the core names either. Any `vendor:name` is
+/// valid (SPEC §5.2) and a generated client that rejected one would refuse to
+/// load a flow the pod is perfectly happy to run — so this is an open string
+/// that documents the core names rather than closing over them.
+#[cfg(feature = "schema")]
+impl utoipa::PartialSchema for FlowNodeType {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        use utoipa::openapi::schema::{ObjectBuilder, Type};
+        ObjectBuilder::new()
+            .schema_type(Type::String)
+            .description(Some(
+                "A core node type (entry, prompt, conditional, branch, set_variable, \
+                 tool, http, sub_agent, approval, wait, foreach, end, branch_tool) or a \
+                 vendor-namespaced custom type such as `slack:send_message`. Custom types \
+                 are opaque and must round-trip unchanged.",
+            ))
+            .examples([serde_json::json!("prompt")])
+            .into()
+    }
+}
+
+#[cfg(feature = "schema")]
+impl utoipa::ToSchema for FlowNodeType {}
+
 /// A directed arc connecting two nodes in a [`FlowDefinition`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct FlowEdge {
     /// Unique identifier within the enclosing [`FlowDefinition`].
     pub id: String,
@@ -199,6 +229,7 @@ pub struct FlowEdge {
 
 /// A graph: nodes and the directed edges between them.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct FlowDefinition {
     /// All vertices in the graph.
     pub nodes: Vec<FlowNode>,
@@ -215,6 +246,7 @@ pub struct FlowDefinition {
 /// background work" a property of the format rather than a rule every install
 /// path has to remember.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct SavedFlow {
     /// Spec version this document conforms to. Defaults to `"1"` when absent.
     #[serde(default = "default_spec_version")]
@@ -251,6 +283,7 @@ fn default_spec_version() -> String {
 ///
 /// Returned by directory listings — see [`crate::store::list_flows`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct FlowSummary {
     /// The flow's stable identifier.
     pub id: String,

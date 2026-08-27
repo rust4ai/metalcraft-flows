@@ -1,6 +1,6 @@
 [package]
 name = "metalcraft-flows"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 rust-version = "1.91"
 description = "Specification and reference types for Flows — a serializable DAG format for AI agent workflows"
@@ -17,6 +17,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 semver = "1"
 regex = { version = "1", optional = true }
+utoipa = { version = "5", optional = true }
 
 [dev-dependencies]
 serde_json = "1"
@@ -26,6 +27,11 @@ tempfile = "3"
 default = ["fs", "regex"]
 fs = []
 log = []
+# OpenAPI schemas for the wire types, so a host that publishes a description can
+# describe a flow graph instead of typing it `object`. Off by default: this crate
+# is the format, and the format should not drag a web framework's derive macros
+# into every consumer that only wants to read a file.
+schema = ["dep:utoipa"]
 # The `matches` (regex) operator on `conditional` nodes. Without this feature,
 # `matches` evaluates to false; every other operator works regardless.
 regex = ["dep:regex"]
