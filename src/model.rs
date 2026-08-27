@@ -10,12 +10,20 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 /// Documents without a `spec_version` field are parsed as version `"1"`.
 /// New v2 node types (`conditional`, `branch` classifier, effectors, pause
 /// nodes) require `spec_version = "2"`; see [`SUPPORTED_SPEC_VERSIONS`].
-pub const SPEC_VERSION: &str = "2";
+///
+/// v3 removes scheduling from the flow document entirely: *when* a flow runs is
+/// a separate artifact ([`crate::scheduled::ScheduledFlow`]), so a `SavedFlow`
+/// answers only *what work is this*.
+pub const SPEC_VERSION: &str = "3";
 
-/// Spec versions this crate can parse and validate. v2 is a superset of v1, so
-/// both are accepted; documents declaring any other version are rejected by
-/// [`crate::validate()`].
-pub const SUPPORTED_SPEC_VERSIONS: &[&str] = &["1", "2"];
+/// Spec versions this crate can parse and validate. Each is a superset of the
+/// last for node vocabulary, so all are accepted; documents declaring any other
+/// version are rejected by [`crate::validate()`].
+///
+/// v1 and v2 documents may still carry the removed `enabled` / `schedules`
+/// fields. Parsing ignores them — [`crate::migrate`] is what reads them, from
+/// the raw JSON, on the way to v3.
+pub const SUPPORTED_SPEC_VERSIONS: &[&str] = &["1", "2", "3"];
 
 /// A single vertex in a [`FlowDefinition`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -199,6 +207,13 @@ pub struct FlowDefinition {
 }
 
 /// A persisted flow document — what a `.json` file on disk contains.
+///
+/// A flow describes **what work is this**, and nothing else. When it runs, as
+/// whom, and on which agent live in [`ScheduledFlow`](crate::scheduled::ScheduledFlow)
+/// documents that point at it by id. A flow with no `ScheduledFlow` pointing at
+/// it cannot fire — which is what makes "installing something never starts
+/// background work" a property of the format rather than a rule every install
+/// path has to remember.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SavedFlow {
     /// Spec version this document conforms to. Defaults to `"1"` when absent.
@@ -212,172 +227,12 @@ pub struct SavedFlow {
     pub created_at: String,
     /// ISO-8601 / RFC-3339 last-modified timestamp.
     pub updated_at: String,
-    /// Whether the flow should be executed by a scheduler. Defaults to `false`.
-    ///
-    /// This is the **master switch**: a scheduler must ignore a flow entirely
-    /// when this is `false`, regardless of its [`schedules`](Self::schedules).
-    #[serde(default)]
-    pub enabled: bool,
-    /// Flow-level schedules — **when** the flow runs. Absent/empty on legacy
-    /// documents, whose trigger lives on the entry node's `data.schedule_type`
-    /// instead; see [`Self::effective_schedules`] for the precedence rule.
-    ///
-    /// A flow may declare **any number** of schedules (e.g. one at 08:00 and one
-    /// at 18:00). Published flows may ship default schedules here that seed onto a
-    /// host when the flow is installed.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub schedules: Vec<FlowScheduleSpec>,
     /// Declared integration-pack / tool dependencies. Absent on legacy documents;
     /// see [`crate::requires`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requires: Option<crate::requires::Requires>,
     /// The graph definition.
     pub flow: FlowDefinition,
-}
-
-/// A single flow-level schedule: one trigger, plus the toggle and overrides that
-/// apply when it fires.
-///
-/// See [`SavedFlow::schedules`]. A flow may carry many of these; each fires
-/// independently.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct FlowScheduleSpec {
-    /// Stable identifier within the enclosing flow (e.g. `"morning"`). Must be
-    /// unique among the flow's schedules. Author-assigned for published defaults
-    /// so an upgrade can diff schedules by id.
-    pub id: String,
-    /// Whether this individual trigger is active. Defaults to `true`. Distinct
-    /// from [`SavedFlow::enabled`], the flow-wide master switch.
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    /// The trigger, tagged by `type`: `manual` | `minutes` | `hours` | `cron`.
-    #[serde(flatten)]
-    pub trigger: ScheduleTrigger,
-    /// Human-readable label for editors (`"Morning brief"`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    /// IANA timezone the `cron` trigger is evaluated in (e.g.
-    /// `"America/Detroit"`). `None` means the host's local/server time. Ignored
-    /// by non-cron triggers.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timezone: Option<String>,
-    /// Inputs handed to the flow when this schedule fires, so the same flow can
-    /// run with different parameters on different schedules.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub inputs: Option<serde_json::Value>,
-    /// Persona override for runs triggered by this schedule. `None` falls back to
-    /// the flow/host default.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub persona: Option<String>,
-}
-
-/// A schedule's trigger: how its firing times are computed.
-///
-/// Serialized with an internal `type` tag, so a cron schedule is
-/// `{ "type": "cron", "cron": "0 8 * * *" }`. This mirrors the legacy entry-node
-/// `schedule_type` vocabulary so back-compat conversion is mechanical.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ScheduleTrigger {
-    /// No scheduled firing; the flow runs only via an explicit run/agent action.
-    Manual,
-    /// Fire every `interval` minutes.
-    Minutes {
-        /// Interval in minutes. Must be positive.
-        interval: u64,
-    },
-    /// Fire every `interval` hours.
-    Hours {
-        /// Interval in hours. Must be positive.
-        interval: u64,
-    },
-    /// Fire on a cron expression. The string is a standard cron expression; this
-    /// crate does not parse it (that is the host runtime's concern).
-    Cron {
-        /// The cron expression, e.g. `"0 8 * * *"`.
-        cron: String,
-    },
-}
-
-fn default_true() -> bool {
-    true
-}
-
-impl SavedFlow {
-    /// The normalized schedule list a runtime should honor.
-    ///
-    /// Precedence:
-    /// 1. If [`schedules`](Self::schedules) is non-empty, it wins verbatim and
-    ///    any entry-node `schedule_type` is ignored.
-    /// 2. Otherwise, if the entry node declares a `schedule_type`, synthesize a
-    ///    single spec from it (the legacy v1 behavior), preserving the entry
-    ///    node's optional `persona`.
-    /// 3. Otherwise, a single [`ScheduleTrigger::Manual`] spec.
-    ///
-    /// This lets existing flows (schedule on the entry node) keep running with no
-    /// migration.
-    pub fn effective_schedules(&self) -> Vec<FlowScheduleSpec> {
-        if !self.schedules.is_empty() {
-            return self.schedules.clone();
-        }
-        if let Some(spec) = self.entry_schedule_from_node() {
-            return vec![spec];
-        }
-        vec![FlowScheduleSpec {
-            id: "default".to_string(),
-            enabled: true,
-            trigger: ScheduleTrigger::Manual,
-            name: None,
-            timezone: None,
-            inputs: None,
-            persona: None,
-        }]
-    }
-
-    /// Synthesize a schedule spec from the legacy entry-node `data` fields, if an
-    /// entry node with a `schedule_type` is present. Returns `None` when there is
-    /// no entry node or it declares no `schedule_type`.
-    fn entry_schedule_from_node(&self) -> Option<FlowScheduleSpec> {
-        let entry = self
-            .flow
-            .nodes
-            .iter()
-            .find(|n| matches!(n.node_type, FlowNodeType::Core(CoreNodeType::Entry)))?;
-        let schedule_type = entry.data.get("schedule_type").and_then(|v| v.as_str())?;
-        let interval = entry
-            .data
-            .get("interval")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        let trigger = match schedule_type {
-            "minutes" => ScheduleTrigger::Minutes { interval },
-            "hours" => ScheduleTrigger::Hours { interval },
-            "cron" => ScheduleTrigger::Cron {
-                cron: entry
-                    .data
-                    .get("cron")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-            },
-            // "manual" and any unknown legacy value degrade to manual.
-            _ => ScheduleTrigger::Manual,
-        };
-        let persona = entry
-            .data
-            .get("persona")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        Some(FlowScheduleSpec {
-            id: "default".to_string(),
-            enabled: true,
-            trigger,
-            name: None,
-            timezone: None,
-            inputs: None,
-            persona,
-        })
-    }
 }
 
 /// The version assumed for a document that omits `spec_version`.
@@ -407,13 +262,6 @@ pub struct FlowSummary {
     pub created_at: String,
     /// ISO-8601 / RFC-3339 last-modified timestamp.
     pub updated_at: String,
-    /// Whether the flow is enabled for scheduling.
-    #[serde(default)]
-    pub enabled: bool,
-    /// Number of effective schedules (from `schedules`, else the legacy
-    /// entry-node trigger). See [`SavedFlow::effective_schedules`].
-    #[serde(default)]
-    pub schedule_count: usize,
 }
 
 /// Whether an id is safe to use as a filename per [`SPEC.md` §1.1].
@@ -421,6 +269,19 @@ pub(crate) fn is_safe_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 64
         && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+/// Whether a [`ScheduledFlow`](crate::scheduled::ScheduledFlow) id is safe to use
+/// as a filename.
+///
+/// Looser than [`is_safe_id`] by one character: `_`, because generated ids are
+/// prefixed (`sf_9c31a4`) to be recognisable in a log line without being parsed.
+pub(crate) fn is_safe_scheduled_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 /// Whether a vendor namespace conforms to the rules in [`SPEC.md` §5.2].
@@ -482,25 +343,45 @@ mod tests {
         });
         let parsed: SavedFlow = serde_json::from_value(doc).unwrap();
         assert_eq!(parsed.spec_version, "1");
-        assert!(!parsed.enabled);
+    }
+
+    #[test]
+    fn legacy_scheduling_fields_are_ignored_not_rejected() {
+        // A v2 document straight off an un-migrated pod. It must still parse —
+        // `crate::migrate` reads the scheduling out of the raw JSON, and a
+        // document that refused to load could not be migrated at all.
+        let doc = json!({
+            "spec_version": "2",
+            "id": "x", "name": "X",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "enabled": true,
+            "schedules": [ { "id": "morning", "type": "cron", "cron": "0 0 8 * * *" } ],
+            "flow": { "nodes": [], "edges": [] }
+        });
+        let parsed: SavedFlow = serde_json::from_value(doc).unwrap();
+        assert_eq!(parsed.id, "x");
+        // …and re-serializing drops them, which is why migration must run before
+        // anything else writes a flow back out.
+        let out = serde_json::to_value(&parsed).unwrap();
+        assert!(out.get("schedules").is_none());
+        assert!(out.get("enabled").is_none());
     }
 
     #[test]
     fn saved_flow_round_trips() {
         let sf = SavedFlow {
-            spec_version: "1".into(),
+            spec_version: "3".into(),
             id: "f1".into(),
             name: "F1".into(),
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-02T00:00:00Z".into(),
-            enabled: true,
-            schedules: vec![],
             requires: None,
             flow: FlowDefinition {
                 nodes: vec![FlowNode {
                     id: "n1".into(),
                     node_type: FlowNodeType::Core(CoreNodeType::Entry),
-                    data: json!({"schedule_type": "manual"}),
+                    data: json!({}),
                     position: [10.0, 20.0],
                 }],
                 edges: vec![],
@@ -512,84 +393,6 @@ mod tests {
     }
 
     #[test]
-    fn effective_schedules_prefers_top_level_array() {
-        let mut sf: SavedFlow = serde_json::from_value(json!({
-            "id": "f", "name": "F",
-            "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z",
-            "schedules": [
-                { "id": "morning", "type": "cron", "cron": "0 8 * * *" },
-                { "id": "evening", "type": "cron", "cron": "0 18 * * *", "enabled": false }
-            ],
-            "flow": { "nodes": [
-                { "id": "entry", "node_type": "entry", "data": { "schedule_type": "cron", "cron": "0 0 * * *" }, "position": [0,0] }
-            ], "edges": [] }
-        }))
-        .unwrap();
-        let eff = sf.effective_schedules();
-        assert_eq!(eff.len(), 2, "top-level array wins over the entry node");
-        assert_eq!(eff[0].id, "morning");
-        assert!(eff[0].enabled);
-        assert!(!eff[1].enabled);
-        assert_eq!(eff[0].trigger, ScheduleTrigger::Cron { cron: "0 8 * * *".into() });
-
-        // Clearing the array falls back to the legacy entry-node trigger.
-        sf.schedules.clear();
-        let eff = sf.effective_schedules();
-        assert_eq!(eff.len(), 1);
-        assert_eq!(eff[0].trigger, ScheduleTrigger::Cron { cron: "0 0 * * *".into() });
-    }
-
-    #[test]
-    fn effective_schedules_legacy_entry_and_manual_fallback() {
-        // No schedules, no entry schedule_type → a single manual spec.
-        let sf: SavedFlow = serde_json::from_value(json!({
-            "id": "f", "name": "F",
-            "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z",
-            "flow": { "nodes": [
-                { "id": "entry", "node_type": "entry", "data": {}, "position": [0,0] }
-            ], "edges": [] }
-        }))
-        .unwrap();
-        let eff = sf.effective_schedules();
-        assert_eq!(eff.len(), 1);
-        assert_eq!(eff[0].trigger, ScheduleTrigger::Manual);
-
-        // Legacy minutes trigger + entry persona carries through.
-        let sf: SavedFlow = serde_json::from_value(json!({
-            "id": "f", "name": "F",
-            "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z",
-            "flow": { "nodes": [
-                { "id": "entry", "node_type": "entry", "data": { "schedule_type": "minutes", "interval": 15, "persona": "briefer" }, "position": [0,0] }
-            ], "edges": [] }
-        }))
-        .unwrap();
-        let eff = sf.effective_schedules();
-        assert_eq!(eff[0].trigger, ScheduleTrigger::Minutes { interval: 15 });
-        assert_eq!(eff[0].persona.as_deref(), Some("briefer"));
-    }
-
-    #[test]
-    fn schedule_trigger_serializes_with_type_tag() {
-        let spec = FlowScheduleSpec {
-            id: "s".into(),
-            enabled: true,
-            trigger: ScheduleTrigger::Cron { cron: "0 8 * * *".into() },
-            name: Some("Morning".into()),
-            timezone: Some("America/Detroit".into()),
-            inputs: None,
-            persona: None,
-        };
-        let v = serde_json::to_value(&spec).unwrap();
-        assert_eq!(v["type"], "cron");
-        assert_eq!(v["cron"], "0 8 * * *");
-        assert_eq!(v["timezone"], "America/Detroit");
-        // enabled defaults to true when omitted on the wire.
-        let back: FlowScheduleSpec =
-            serde_json::from_value(json!({ "id": "s", "type": "manual" })).unwrap();
-        assert!(back.enabled);
-    }
-
-    #[test]
     fn id_validation() {
         assert!(is_safe_id("ok-id"));
         assert!(is_safe_id("a"));
@@ -597,6 +400,11 @@ mod tests {
         assert!(!is_safe_id("has space"));
         assert!(!is_safe_id("../escape"));
         assert!(!is_safe_id(&"x".repeat(65)));
+        // Scheduled-flow ids additionally allow `_` for the `sf_` prefix.
+        assert!(is_safe_scheduled_id("sf_9c31a4"));
+        assert!(!is_safe_id("sf_9c31a4"));
+        assert!(!is_safe_scheduled_id("../escape"));
+        assert!(!is_safe_scheduled_id(""));
     }
 
     #[test]

@@ -1,0 +1,17 @@
+{
+  "id": "sf_9c31a4",
+  "flow_id": "morning-brief",
+  "enabled": true,
+  "schedule": {
+    "name": "Morning brief",
+    "type": "cron",
+    "cron": "0 0 8 * * *",
+    "timezone": "America/Detroit",
+    "inputs": { "depth": "short" },
+    "persona": "morning-briefer"
+  },
+  "instance_id": "inst_4f2c81",
+  "from_suggestion": "morning",
+  "created_at": "2026-08-27T00:00:00Z",
+  "updated_at": "2026-08-27T00:00:00Z"
+}

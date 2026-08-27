@@ -3,7 +3,8 @@
 //! Each flow lives in its own `{id}.json` file inside the given directory.
 //! Enabled by the default `fs` feature.
 
-use crate::model::{is_safe_id, FlowSummary, SavedFlow};
+use crate::model::{is_safe_id, is_safe_scheduled_id, FlowSummary, SavedFlow};
+use crate::scheduled::ScheduledFlow;
 use std::io;
 use std::path::Path;
 
@@ -59,15 +60,12 @@ pub fn list_flows(dir: &Path) -> Vec<FlowSummary> {
         .filter_map(|e| {
             let data = std::fs::read_to_string(e.path()).ok()?;
             let flow: SavedFlow = serde_json::from_str(&data).ok()?;
-            let schedule_count = flow.effective_schedules().len();
             Some(FlowSummary {
                 id: flow.id,
                 name: flow.name,
                 node_count: flow.flow.nodes.len(),
                 created_at: flow.created_at,
                 updated_at: flow.updated_at,
-                enabled: flow.enabled,
-                schedule_count,
             })
         })
         .collect();
@@ -84,6 +82,77 @@ pub fn delete_flow(dir: &Path, id: &str) -> bool {
     std::fs::remove_file(path).is_ok()
 }
 
+// ---- Scheduled flows -------------------------------------------------------
+//
+// A separate directory from the flows themselves, so "what can this host do" and
+// "what is this host going to do" are two listings rather than one listing you
+// have to interpret.
+
+/// Persist a [`ScheduledFlow`] to `{dir}/{sf.id}.json`.
+///
+/// Creates `dir` (and any missing parents) if needed.
+pub fn save_scheduled_flow(dir: &Path, sf: &ScheduledFlow) -> io::Result<()> {
+    if !is_safe_scheduled_id(&sf.id) {
+        return io::Result::Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid scheduled flow id: {:?}", sf.id),
+        ));
+    }
+    std::fs::create_dir_all(dir)?;
+    let path = dir.join(format!("{}.json", sf.id));
+    let json = serde_json::to_string_pretty(sf).map_err(io::Error::other)?;
+    std::fs::write(&path, json)
+}
+
+/// Load `{dir}/{id}.json` into a [`ScheduledFlow`].
+///
+/// Returns `None` if the id is malformed, the file is missing, or the contents
+/// are not parseable.
+pub fn load_scheduled_flow(dir: &Path, id: &str) -> Option<ScheduledFlow> {
+    if !is_safe_scheduled_id(id) {
+        return None;
+    }
+    let data = std::fs::read_to_string(dir.join(format!("{id}.json"))).ok()?;
+    serde_json::from_str(&data).ok()
+}
+
+/// Every scheduled flow in `dir`, sorted by id so listings are stable.
+///
+/// Sorted by id rather than by creation time on purpose: ids are opaque, so this
+/// is an arbitrary-but-fixed order, and a caller that wants a meaningful one
+/// (next firing, flow name) has to say so.
+pub fn list_scheduled_flows(dir: &Path) -> Vec<ScheduledFlow> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return vec![];
+    };
+    let mut out: Vec<ScheduledFlow> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
+        .filter_map(|e| {
+            let data = std::fs::read_to_string(e.path()).ok()?;
+            serde_json::from_str(&data).ok()
+        })
+        .collect();
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    out
+}
+
+/// Every scheduled flow in `dir` that points at `flow_id`.
+pub fn scheduled_for_flow(dir: &Path, flow_id: &str) -> Vec<ScheduledFlow> {
+    list_scheduled_flows(dir)
+        .into_iter()
+        .filter(|sf| sf.flow_id == flow_id)
+        .collect()
+}
+
+/// Delete `{dir}/{id}.json`. Returns `true` if a file was removed.
+pub fn delete_scheduled_flow(dir: &Path, id: &str) -> bool {
+    if !is_safe_scheduled_id(id) {
+        return false;
+    }
+    std::fs::remove_file(dir.join(format!("{id}.json"))).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,13 +162,11 @@ mod tests {
 
     fn sample(id: &str, updated_at: &str) -> SavedFlow {
         SavedFlow {
-            spec_version: "1".into(),
+            spec_version: "3".into(),
             id: id.into(),
             name: format!("Flow {id}"),
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: updated_at.into(),
-            enabled: false,
-            schedules: vec![],
             requires: None,
             flow: FlowDefinition {
                 nodes: vec![FlowNode {

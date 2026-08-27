@@ -211,3 +211,72 @@ fn madrid_weather_routes_by_branch_and_conditional() {
     //    "18" > "50" would be true and wrongly route to say_hot.
     assert_eq!(route_conditional(&flow, "check_hot", serde_json::json!("18")), "say_cold");
 }
+
+// ---- v3: the flow and its schedule are two documents -----------------------
+
+#[test]
+fn v3_flow_carries_no_scheduling() {
+    let raw = read_example("morning_brief.json");
+    let parsed: SavedFlow = serde_json::from_str(&raw).expect("should parse");
+
+    assert_eq!(parsed.spec_version, "3");
+    assert!(validate(&parsed).is_empty());
+
+    // Nothing in the document says when it runs — including the entry node,
+    // which is where v1 kept it.
+    let entry = parsed.flow.nodes.iter().find(|n| n.id == "entry").unwrap();
+    assert!(entry.data.get("schedule_type").is_none());
+    let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert!(json.get("schedules").is_none());
+    assert!(json.get("enabled").is_none());
+}
+
+#[test]
+fn scheduled_flow_example_parses_and_validates() {
+    let raw = std::fs::read_to_string(examples_dir().join("scheduled/morning_brief.json"))
+        .expect("read scheduled example");
+    let sf: metalcraft_flows::ScheduledFlow = serde_json::from_str(&raw).expect("should parse");
+
+    assert_eq!(sf.flow_id, "morning-brief");
+    assert!(sf.enabled);
+    assert!(metalcraft_flows::validate_scheduled(&sf).is_empty());
+    assert_eq!(
+        sf.schedule.describe(),
+        "Cron `0 0 8 * * *` (America/Detroit)"
+    );
+
+    // Round-trips without loss.
+    let again: metalcraft_flows::ScheduledFlow =
+        serde_json::from_str(&serde_json::to_string(&sf).unwrap()).unwrap();
+    assert_eq!(sf, again);
+}
+
+#[test]
+fn a_v1_example_migrates_to_v3_plus_its_schedule() {
+    // `linear_task_worker` is the legacy shape: `enabled` on the document and the
+    // trigger on the entry node. It is kept in the corpus precisely because that
+    // is what a host upgrading from v1 has on disk.
+    let raw = read_example("linear_task_worker.json");
+    let doc: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let out = metalcraft_flows::extract(&doc).expect("extract");
+
+    assert!(out.changed);
+    assert_eq!(out.flow.spec_version, "3");
+    assert!(validate(&out.flow).is_empty());
+
+    assert_eq!(out.schedules.len(), 1);
+    let s = &out.schedules[0];
+    assert_eq!(s.key, "default");
+    // The example ships disabled, so the migrated schedule is off. Migration
+    // never starts something that was not already running.
+    assert!(!s.enabled);
+    assert!(matches!(
+        s.schedule.trigger,
+        metalcraft_flows::ScheduleTrigger::Minutes { .. }
+    ));
+
+    // The entry node keeps everything except the dead scheduling keys.
+    let entry = out.flow.flow.nodes.iter().find(|n| n.id == "entry").unwrap();
+    assert!(entry.data.get("schedule_type").is_none());
+    assert!(entry.data.get("interval").is_none());
+}

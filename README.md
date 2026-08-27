@@ -22,11 +22,35 @@ This crate provides:
 
 See [`SPEC.md`](./SPEC.md) for the formal wire-format specification.
 
+## Flows and schedules are two documents
+
+A `SavedFlow` says **what work is this**. A `ScheduledFlow` says **when it runs**,
+as whom, and with what inputs — and points at a flow by id:
+
+```json
+{
+  "id": "sf_9c31a4",
+  "flow_id": "morning-brief",
+  "enabled": true,
+  "schedule": { "type": "cron", "cron": "0 0 8 * * *", "timezone": "America/Detroit" },
+  "created_at": "2026-08-27T00:00:00Z",
+  "updated_at": "2026-08-27T00:00:00Z"
+}
+```
+
+One flow can carry many schedules (08:00 short, 18:00 long) without the graph
+knowing. And a flow nothing points at cannot fire — so installing a pack or
+downloading a flow starts no background work as a property of the format, rather
+than as a rule every install path has to remember.
+
+Pre-v3 documents kept scheduling inside the flow; `metalcraft_flows::extract`
+reads it back out. See SPEC §1.3 and §6.
+
 ## Quick start
 
 ```toml
 [dependencies]
-metalcraft-flows = "0.1"
+metalcraft-flows = "0.5"
 ```
 
 ```rust
@@ -38,7 +62,7 @@ let flow = FlowDefinition {
         FlowNode {
             id: "entry".into(),
             node_type: FlowNodeType::Core(CoreNodeType::Entry),
-            data: json!({ "schedule_type": "manual" }),
+            data: json!({}),
             position: [0.0, 0.0],
         },
         FlowNode {

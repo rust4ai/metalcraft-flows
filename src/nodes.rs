@@ -25,24 +25,17 @@ pub struct InputSpec {
 }
 
 /// `data` for an [`entry`](crate::CoreNodeType::Entry) node.
+///
+/// Carried no scheduling since spec v3: when a flow runs is
+/// [`ScheduledFlow`](crate::scheduled::ScheduledFlow)'s business. Pre-v3
+/// documents may still have `schedule_type` / `interval` / `cron` here; they
+/// parse (unknown fields are ignored) and mean nothing, which is why
+/// [`crate::migrate`] strips them.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EntryData {
-    /// `"manual" | "minutes" | "hours" | "cron"`.
-    #[serde(default = "default_schedule_type")]
-    pub schedule_type: String,
-    /// Interval for `"minutes"` / `"hours"` schedules.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub interval: Option<u64>,
-    /// Cron expression for the `"cron"` schedule.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cron: Option<String>,
     /// Optional typed invocation parameters, seeded into flow state at run start.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inputs: Option<BTreeMap<String, InputSpec>>,
-}
-
-fn default_schedule_type() -> String {
-    "manual".to_string()
 }
 
 /// `data` for a [`prompt`](crate::CoreNodeType::Prompt) node.

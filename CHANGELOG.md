@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] — spec v3
+
+### Removed — **breaking**
+
+- `SavedFlow::schedules` and `SavedFlow::enabled`. A flow document no longer says
+  when it runs; that is a separate `ScheduledFlow` artifact.
+- `SavedFlow::effective_schedules()` and the three-tier precedence behind it
+  (top-level array → legacy entry-node trigger → implicit manual).
+- `FlowScheduleSpec` — superseded by `ScheduleSpec`, which carries no `id` (the
+  enclosing `ScheduledFlow::id` is the only handle) and no `enabled` (it moved up
+  to the artifact).
+- `EntryData::schedule_type` / `interval` / `cron`.
+- `FlowSummary::enabled` and `FlowSummary::schedule_count`.
+
+### Added
+
+- `scheduled::ScheduledFlow` — `{ id, flow_id, enabled, schedule, instance_id?,
+  from_suggestion?, created_at, updated_at }`. Creating one is what arms a flow;
+  a flow no `ScheduledFlow` names cannot fire.
+- `scheduled::ScheduleSpec`, `scheduled::Suggestion` (an author's inert suggested
+  schedule, keyed in the author's namespace), `scheduled::validate_scheduled`.
+- `ScheduleTrigger::describe` / `ScheduleSpec::display_name`, so every client
+  phrases a trigger the same way.
+- `migrate::extract` — splits a pre-v3 document into a v3 flow plus the schedules
+  it was carrying. Pure and id-free; hosts mint ids and resolve agents. Sets each
+  schedule's `enabled` to `flow.enabled && schedule.enabled`, so migrating never
+  starts something that was not already running.
+- `store::{save,load,list,delete}_scheduled_flow` + `scheduled_for_flow`, storing
+  one document per file in a `scheduled_flows/` directory.
+
+### Changed
+
+- `SPEC_VERSION` is now `"3"`; `SUPPORTED_SPEC_VERSIONS` is `["1", "2", "3"]`.
+  v1/v2 documents still parse — their scheduling fields are ignored, which is
+  what makes them migratable rather than unreadable.
+- `ValidationError::InvalidSchedule` is now produced by `validate_scheduled`
+  rather than `validate`; a flow has no scheduling to be wrong about.
+
 ## [0.2.2]
 
 ### Added
