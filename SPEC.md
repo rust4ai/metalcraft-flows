@@ -150,7 +150,7 @@ The `schedule` object carries the trigger inline, tagged by `type`:
 | ---------- | ------- | -------- | -------------------------------------------------------------------------------------------- |
 | `type`     | string  | yes      | `"manual"` \| `"minutes"` \| `"hours"` \| `"cron"`.                                          |
 | `interval` | number  | cond.    | Required for `minutes`/`hours`; must be positive.                                             |
-| `cron`     | string  | cond.    | Required for `cron`; a cron expression. This spec does not parse it — the host runtime does.  |
+| `cron`     | string  | cond.    | Required for `cron`; a cron expression. This spec does not parse it — the host runtime does, and its dialect governs. The reference runtime takes **six** fields, seconds first (`0 0 8 * * *` is 08:00 daily), numbers days-of-week `1`–`7` from Sunday, and rejects the five-field POSIX form rather than assuming a zero second. |
 | `name`     | string  | no       | Human-readable label. This is what a UI shows; the `id` is opaque.                            |
 | `timezone` | string  | no       | IANA timezone a `cron` trigger is evaluated in. Absent = host local time. Ignored otherwise.  |
 | `inputs`   | object  | no       | Inputs handed to the run when this schedule fires (per-schedule parameters).                   |

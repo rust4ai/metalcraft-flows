@@ -103,7 +103,7 @@ pub struct ScheduleSpec {
 /// A schedule's trigger: how its firing times are computed.
 ///
 /// Serialized with an internal `type` tag, so a cron schedule is
-/// `{ "type": "cron", "cron": "0 8 * * *" }`.
+/// `{ "type": "cron", "cron": "0 0 8 * * *" }`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ScheduleTrigger {
@@ -126,7 +126,14 @@ pub enum ScheduleTrigger {
     /// Fire on a cron expression. The string is a standard cron expression; this
     /// crate does not parse it (that is the host runtime's concern).
     Cron {
-        /// The cron expression, e.g. `"0 8 * * *"`.
+        /// The cron expression, e.g. `"0 0 8 * * *"` — daily at 08:00.
+        ///
+        /// Not parsed here (§1.3): the dialect belongs to whichever runtime
+        /// computes firing times, and this crate takes no cron dependency in
+        /// order to say so. Worth knowing which dialect you are writing for,
+        /// though — the reference runtime wants **six** fields, seconds first,
+        /// and rejects the five-field POSIX form outright rather than assuming
+        /// a zero second.
         cron: String,
     },
 }
@@ -156,7 +163,7 @@ fn default_true() -> bool {
 }
 
 impl ScheduleTrigger {
-    /// A one-line human description: `"Every 15 minute(s)"`, ``"Cron `0 8 * * *`
+    /// A one-line human description: `"Every 15 minute(s)"`, ``"Cron `0 0 8 * * *`
     /// (America/Detroit)"``.
     ///
     /// Lives here so a pod, a desktop client and a web listing describe the same
