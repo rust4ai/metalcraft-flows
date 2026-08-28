@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1]
+
+### Added
+
+- `nodes::EntryData::persona` — the flow's default persona, which every
+  `prompt`/`branch` node runs as unless it names its own. The field was always
+  live: the reference runtime reads `entry.data.persona` and `migrate` preserves
+  it, but the typed view did not name it, so anything that parsed `EntryData` and
+  wrote it back silently dropped the persona and handed the flow to whichever
+  agent happened to run it.
+
+### Changed
+
+- SPEC §5.1: the `entry` row documents `persona`, and stops pointing at the
+  `schedules` array v3 removed. It described legacy scheduling keys as
+  "superseded by the top-level `schedules` array (§1.3)" — which has itself been
+  a `ScheduledFlow` since v3.
+
 ## [0.6.0]
 
 ### Added

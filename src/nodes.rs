@@ -36,6 +36,18 @@ pub struct EntryData {
     /// Optional typed invocation parameters, seeded into flow state at run start.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inputs: Option<BTreeMap<String, InputSpec>>,
+    /// The flow's default persona: what every `prompt`/`branch` node runs as
+    /// unless it names its own.
+    ///
+    /// Survived the v3 split while the scheduling keys beside it did not, and
+    /// deliberately: *when* a flow runs belongs to a schedule, but *what the
+    /// flow is* includes the character doing the work — a flow built on a pack's
+    /// tools is not the same flow run by an agent that has never heard of them.
+    /// A [`ScheduledFlow`](crate::scheduled::ScheduledFlow) may still override it
+    /// per schedule, and [`crate::migrate`] carries it into the schedule it
+    /// extracts as well as leaving it here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persona: Option<String>,
 }
 
 /// `data` for a [`prompt`](crate::CoreNodeType::Prompt) node.
@@ -231,4 +243,35 @@ pub struct EndData {
     /// Values to publish as the flow's outputs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outputs: Option<serde_json::Value>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn entry_keeps_its_persona_and_drops_nothing_it_should_keep() {
+        // The runtime resolves a flow's default persona from `entry.data.persona`
+        // (and migration preserves it), so the typed view has to carry it too:
+        // a host that parsed `EntryData` and wrote it back used to silently strip
+        // the persona and hand the flow to whatever agent happened to run it.
+        let data = json!({
+            "persona": "calcom-agent",
+            "inputs": { "timezone": { "type": "string", "required": false } },
+        });
+        let parsed: EntryData = serde_json::from_value(data.clone()).expect("parses");
+        assert_eq!(parsed.persona.as_deref(), Some("calcom-agent"));
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), data);
+    }
+
+    #[test]
+    fn entry_scheduling_is_gone_but_still_parses() {
+        // A pre-v3 document must keep loading; its scheduling keys are simply
+        // not part of the type any more.
+        let parsed: EntryData =
+            serde_json::from_value(json!({ "schedule_type": "hours", "interval": 24 }))
+                .expect("legacy entry data still parses");
+        assert_eq!(parsed, EntryData { inputs: None, persona: None });
+    }
 }
